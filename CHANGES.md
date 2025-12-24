@@ -3,6 +3,13 @@
 
 Here you can see the full list of changes between each flask-audit-logger release.
 
+# Unreleased
+
+- Add support for secondary audit database configuration via `audit_db_uri` parameter
+- Transaction records can now be written to a separate database for improved isolation and scalability
+- Audit write operations are now wrapped in error handling to ensure main transactions never fail due to audit issues
+- Add comprehensive tests for secondary database functionality and error resilience
+
 # 1.0.0 (2023-12-29)
 
 - Rename `VersioningManager` to `AuditLogger`
