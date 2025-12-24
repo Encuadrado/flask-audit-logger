@@ -8,7 +8,6 @@ from tests.secondary_database.flask_app import (
     AuditLogTransaction,
     User,
     app,
-    audit_db_conn_str,
     audit_logger,
     db,
 )

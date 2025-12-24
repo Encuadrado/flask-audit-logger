@@ -9,7 +9,6 @@ from tests.python_activity_writer_separate_db.flask_app import (
     AuditLogTransaction,
     User,
     app,
-    audit_db_conn_str,
     audit_logger,
     db,
 )

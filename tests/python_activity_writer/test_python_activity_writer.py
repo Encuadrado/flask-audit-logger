@@ -1,7 +1,7 @@
 """Tests for Python-based activity writer."""
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, select
 
 from tests.python_activity_writer.flask_app import AuditLogActivity, User, db
 
@@ -31,10 +31,10 @@ class TestPythonActivityWriter:
             .where(AuditLogActivity.table_name == "user")
             .order_by(AuditLogActivity.id)
         ).all()
-        
+
         # Should have 2 activities: one for insert, one for update
         assert len(activities) == 2
-        
+
         # Check the update activity
         update_activity = activities[1]
         assert update_activity.verb == "update"
@@ -48,7 +48,7 @@ class TestPythonActivityWriter:
         user_id = user.id
         user_name = user.name
         user_age = user.age
-        
+
         db.session.delete(user)
         db.session.commit()
 
@@ -57,10 +57,10 @@ class TestPythonActivityWriter:
             .where(AuditLogActivity.table_name == "user")
             .order_by(AuditLogActivity.id)
         ).all()
-        
+
         # Should have 2 activities: one for insert, one for delete
         assert len(activities) == 2
-        
+
         # Check the delete activity
         delete_activity = activities[1]
         assert delete_activity.verb == "delete"
@@ -106,12 +106,13 @@ class TestPythonActivityWriter:
 
     def test_raw_inserts(self):
         """Test that raw SQL inserts also create activity records.
-        
+
         Note: Raw SQL inserts through session.execute() don't trigger after_flush,
         so this is a known limitation of the Python-based activity writer.
         Use the ORM (session.add) or PostgreSQL triggers for raw SQL support.
         """
         import pytest
+
         pytest.skip("Raw SQL inserts not supported by Python activity writer")
 
     def test_partial_update(self, user):
@@ -125,10 +126,10 @@ class TestPythonActivityWriter:
             .where(AuditLogActivity.table_name == "user")
             .order_by(AuditLogActivity.id)
         ).all()
-        
+
         # Should have 2 activities: one for insert, one for update
         assert len(activities) == 2
-        
+
         # Check the update activity - should only have name in changed_data
         update_activity = activities[1]
         assert update_activity.verb == "update"

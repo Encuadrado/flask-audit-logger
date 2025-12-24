@@ -59,10 +59,7 @@ login_manager.init_app(app)
 
 # Use Python-based activity writer with separate audit database for both tables
 audit_logger = AuditLogger(
-    db, 
-    use_python_activity_writer=True,
-    audit_db_uri=audit_db_conn_str,
-    actor_cls="User"
+    db, use_python_activity_writer=True, audit_db_uri=audit_db_conn_str, actor_cls="User"
 )
 AuditLogActivity = audit_logger.activity_cls
 AuditLogTransaction = audit_logger.transaction_cls

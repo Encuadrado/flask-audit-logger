@@ -1,7 +1,7 @@
 """Tests for Python-based activity writer with separate audit database."""
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from tests.python_activity_writer_separate_db.flask_app import (
     AuditLogActivity,
@@ -47,14 +47,12 @@ class TestPythonActivityWriterSeparateDatabase:
 
     def test_main_database_does_not_have_audit_records(self, user):
         """Test that no audit records are written to the main database.
-        
+
         Note: The tables might exist in main database due to metadata registration,
         but no data should be written to them.
         """
         # Check that NO data exists in main database audit tables
-        activity_count_main = db.session.scalar(
-            select(func.count()).select_from(AuditLogActivity)
-        )
+        activity_count_main = db.session.scalar(select(func.count()).select_from(AuditLogActivity))
         transaction_count_main = db.session.scalar(
             select(func.count()).select_from(AuditLogTransaction)
         )
@@ -113,19 +111,22 @@ class TestPythonActivityWriterSeparateDatabase:
             activity = audit_session.scalar(
                 select(AuditLogActivity).where(AuditLogActivity.table_name == "user").limit(1)
             )
-            
+
             assert activity is not None
             assert activity.transaction_id is not None
-            
+
             # Verify the transaction exists
             transaction = audit_session.scalar(
-                select(AuditLogTransaction).where(AuditLogTransaction.id == activity.transaction_id)
+                select(AuditLogTransaction).where(
+                    AuditLogTransaction.id == activity.transaction_id
+                )
             )
             assert transaction is not None
             assert transaction.native_transaction_id == activity.native_transaction_id
 
     def test_audit_failure_does_not_break_main_transaction(self, monkeypatch):
         """Test that audit log failures don't break the main transaction."""
+
         # Simulate audit database failure by breaking the session factory
         def failing_session_factory():
             raise Exception("Simulated audit database failure")

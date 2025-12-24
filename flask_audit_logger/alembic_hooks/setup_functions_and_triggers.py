@@ -160,7 +160,7 @@ def setup_functions_and_triggers(audit_logger):
                 if sig in funcs_in_db:
                     upgrade_ops.ops.append(RemoveAuditLoggerFunctionOp(sig))
                 continue
-                
+
             if sig in should_add:
                 upgrade_ops.ops.append(InitAuditLoggerFunctionOp(sig))
             if sig in should_remove:
@@ -179,12 +179,12 @@ def setup_functions_and_triggers(audit_logger):
                 WHERE trigger_name LIKE 'audit_trigger%'
             """
             )
-            
+
             triggers_per_table = defaultdict(list)
             for row in autogen_context.connection.execute(triggers_sql):
                 trigger = Trigger(*row)
                 triggers_per_table[trigger.table].append(trigger)
-            
+
             # Remove triggers for any tables that have them
             for table_name, triggers in triggers_per_table.items():
                 upgrade_ops.ops.append(
@@ -194,7 +194,7 @@ def setup_functions_and_triggers(audit_logger):
                     )
                 )
             return
-        
+
         # Original trigger logic for when using database triggers
         triggers_sql = text(
             """

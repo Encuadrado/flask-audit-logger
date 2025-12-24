@@ -318,9 +318,9 @@ class AuditLogger(object):
         """Save activity records after flush when using Python-based activity writer."""
         if self.audit_logger_disabled:
             return
-        
+
         # Retrieve the changes collected before flush
-        if hasattr(flush_context, '_audit_logger_changes'):
+        if hasattr(flush_context, "_audit_logger_changes"):
             changes = flush_context._audit_logger_changes
             self.save_activity_records_after_flush(session, changes)
 
@@ -328,34 +328,34 @@ class AuditLogger(object):
         """Collect entity changes before they are flushed."""
         # Get the native transaction ID from the main session
         native_tx_id = session.execute(func.txid_current()).scalar()
-        
+
         changes = {
-            'native_transaction_id': native_tx_id,
-            'inserts': [],
-            'updates': [],
-            'deletes': []
+            "native_transaction_id": native_tx_id,
+            "inserts": [],
+            "updates": [],
+            "deletes": [],
         }
-        
+
         # Collect new entities (INSERTs)
         for entity in session.new:
             if entity.__table__ not in self.versioned_tables:
                 continue
-            changes['inserts'].append(self._capture_insert_data(entity))
-        
+            changes["inserts"].append(self._capture_insert_data(entity))
+
         # Collect modified entities (UPDATEs)
         for entity in session.dirty:
             if entity.__table__ not in self.versioned_tables:
                 continue
             if not _is_entity_modified(entity):
                 continue
-            changes['updates'].append(self._capture_update_data(entity))
-        
+            changes["updates"].append(self._capture_update_data(entity))
+
         # Collect deleted entities (DELETEs)
         for entity in session.deleted:
             if entity.__table__ not in self.versioned_tables:
                 continue
-            changes['deletes'].append(self._capture_delete_data(entity))
-        
+            changes["deletes"].append(self._capture_delete_data(entity))
+
         # Store changes on flush_context for retrieval after flush
         flush_context._audit_logger_changes = changes
 
@@ -364,7 +364,7 @@ class AuditLogger(object):
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
-        
+
         changed_data = {}
         for column in table.columns:
             if column.name in excluded_columns:
@@ -372,13 +372,13 @@ class AuditLogger(object):
             value = getattr(entity, column.name, None)
             if value is not None:
                 changed_data[column.name] = value
-        
+
         return {
-            'schema': table.schema or "public",
-            'table_name': table.name,
-            'verb': 'insert',
-            'old_data': {},
-            'changed_data': changed_data,
+            "schema": table.schema or "public",
+            "table_name": table.name,
+            "verb": "insert",
+            "old_data": {},
+            "changed_data": changed_data,
         }
 
     def _capture_update_data(self, entity):
@@ -386,24 +386,24 @@ class AuditLogger(object):
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
-        
+
         # For updates, we need to capture the complete old_data (all fields before change)
         # and only the changed fields in changed_data
         old_data = {}
         changed_data = {}
-        
+
         insp = inspect(entity)
-        
+
         # Iterate through all columns to build old_data and changed_data
         for column in table.columns:
             if column.name in excluded_columns:
                 continue
-            
+
             # Get the attribute for this column
             attr = insp.attrs.get(column.name)
             if not attr:
                 continue
-                
+
             history = attr.history
             if history.has_changes():
                 # This column was modified
@@ -415,7 +415,7 @@ class AuditLogger(object):
                 else:
                     # This shouldn't happen but handle it - maybe it's NULL -> value
                     old_data[column.name] = None
-                        
+
                 if history.added:
                     # This is the new value
                     changed_data[column.name] = history.added[0]
@@ -424,13 +424,13 @@ class AuditLogger(object):
                 value = getattr(entity, column.name, None)
                 if value is not None:
                     old_data[column.name] = value
-        
+
         return {
-            'schema': table.schema or "public",
-            'table_name': table.name,
-            'verb': 'update',
-            'old_data': old_data,
-            'changed_data': changed_data,
+            "schema": table.schema or "public",
+            "table_name": table.name,
+            "verb": "update",
+            "old_data": old_data,
+            "changed_data": changed_data,
         }
 
     def _capture_delete_data(self, entity):
@@ -438,7 +438,7 @@ class AuditLogger(object):
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
-        
+
         old_data = {}
         for column in table.columns:
             if column.name in excluded_columns:
@@ -446,13 +446,13 @@ class AuditLogger(object):
             value = getattr(entity, column.name, None)
             if value is not None:
                 old_data[column.name] = value
-        
+
         return {
-            'schema': table.schema or "public",
-            'table_name': table.name,
-            'verb': 'delete',
-            'old_data': old_data,
-            'changed_data': {},
+            "schema": table.schema or "public",
+            "table_name": table.name,
+            "verb": "delete",
+            "old_data": old_data,
+            "changed_data": {},
         }
 
     def save_activity_records_after_flush(self, session, changes):
@@ -462,22 +462,22 @@ class AuditLogger(object):
 
         try:
             all_changes = []
-            all_changes.extend(changes['inserts'])
-            all_changes.extend(changes['updates'])
-            all_changes.extend(changes['deletes'])
-            
+            all_changes.extend(changes["inserts"])
+            all_changes.extend(changes["updates"])
+            all_changes.extend(changes["deletes"])
+
             if not all_changes:
                 return
-            
+
             # Get the native transaction ID from the changes
-            native_tx_id = changes['native_transaction_id']
-            
+            native_tx_id = changes["native_transaction_id"]
+
             # Prepare activity records for insertion
             for change in all_changes:
                 # Skip if no data changes
-                if not change['changed_data'] and not change['old_data']:
+                if not change["changed_data"] and not change["old_data"]:
                     continue
-                
+
                 # Look up the transaction_id using the native_transaction_id
                 # This query needs to be executed in the audit database context
                 if self._audit_engine and self._audit_session_factory:
@@ -490,20 +490,20 @@ class AuditLogger(object):
                             .order_by(self.transaction_cls.issued_at.desc())
                             .limit(1)
                         )
-                        
+
                         # Use SQL insert statement with function calls for dynamic values
                         values = {
-                            'schema': change['schema'],
-                            'table_name': change['table_name'],
-                            'relid': None,  # Optional field
-                            'issued_at': text("now() AT TIME ZONE 'UTC'"),
-                            'native_transaction_id': native_tx_id,
-                            'verb': change['verb'],
-                            'old_data': change['old_data'],
-                            'changed_data': change['changed_data'],
-                            'transaction_id': transaction_id,
+                            "schema": change["schema"],
+                            "table_name": change["table_name"],
+                            "relid": None,  # Optional field
+                            "issued_at": text("now() AT TIME ZONE 'UTC'"),
+                            "native_transaction_id": native_tx_id,
+                            "verb": change["verb"],
+                            "old_data": change["old_data"],
+                            "changed_data": change["changed_data"],
+                            "transaction_id": transaction_id,
                         }
-                        
+
                         stmt = insert(self.activity_cls).values(**values)
                         audit_session.execute(stmt)
                         audit_session.commit()
@@ -515,22 +515,24 @@ class AuditLogger(object):
                 else:
                     # For main database, use subquery approach
                     values = {
-                        'schema': change['schema'],
-                        'table_name': change['table_name'],
-                        'relid': None,  # Optional field
-                        'issued_at': text("now() AT TIME ZONE 'UTC'"),
-                        'native_transaction_id': native_tx_id,
-                        'verb': change['verb'],
-                        'old_data': change['old_data'],
-                        'changed_data': change['changed_data'],
-                        'transaction_id': select(self.transaction_cls.id).where(
-                            self.transaction_cls.native_transaction_id == native_tx_id
-                        ).order_by(self.transaction_cls.issued_at.desc()).limit(1).scalar_subquery(),
+                        "schema": change["schema"],
+                        "table_name": change["table_name"],
+                        "relid": None,  # Optional field
+                        "issued_at": text("now() AT TIME ZONE 'UTC'"),
+                        "native_transaction_id": native_tx_id,
+                        "verb": change["verb"],
+                        "old_data": change["old_data"],
+                        "changed_data": change["changed_data"],
+                        "transaction_id": select(self.transaction_cls.id)
+                        .where(self.transaction_cls.native_transaction_id == native_tx_id)
+                        .order_by(self.transaction_cls.issued_at.desc())
+                        .limit(1)
+                        .scalar_subquery(),
                     }
-                    
+
                     stmt = insert(self.activity_cls).values(**values)
                     session.execute(stmt)
-                    
+
         except Exception as e:
             logger.error(f"Failed to save activity records: {e}", exc_info=True)
 
@@ -571,7 +573,6 @@ class AuditLogger(object):
             # Log the error but don't fail the main transaction
             logger.error(f"Failed to save audit transaction: {e}", exc_info=True)
             # Don't re-raise - audit logging failures should not break the application
-
 
     @property
     def actor_cls(self):
