@@ -89,6 +89,71 @@ def get_current_user_id():
 audit_logger = AuditLogger(db, get_actor_id=get_current_user_id)
 ```
 
+### Using a Secondary Database for Audit Logs
+
+For improved scalability and isolation, you can configure Flask-Audit-Logger to write audit transaction records to a separate database. This is useful when you want to:
+
+- Isolate audit log storage from your main application database
+- Scale audit storage independently
+- Ensure audit logs remain available even if the main database has issues
+
+#### Configuration
+
+Pass the `audit_db_uri` parameter when creating the AuditLogger instance:
+
+```python
+# In app/models.py
+from flask_audit_logger import AuditLogger
+
+# Configure AuditLogger with a secondary database for audit logs
+audit_logger = AuditLogger(
+    db, 
+    audit_db_uri="postgresql://user:password@audit-db-host/audit_db"
+)
+```
+
+#### Database Setup
+
+When using a secondary audit database, you need to:
+
+1. Create the secondary database:
+```bash
+createdb audit_db
+```
+
+2. Create the audit tables in the secondary database. The `transaction` table needs to be created manually:
+```python
+# In a migration script or setup code
+from app.models import audit_logger
+
+with audit_logger._audit_engine.begin() as connection:
+    audit_logger.transaction_cls.metadata.create_all(bind=connection)
+```
+
+#### How It Works
+
+- **Transaction records** (`transaction` table) are written to the secondary database when configured
+- **Activity records** (`activity` table) remain in the main database due to database trigger constraints
+- **Error handling**: If the secondary database is unavailable, the error is logged but the main transaction continues normally
+- **Fallback**: If `audit_db_uri` is not provided, all audit tables remain in the main database (default behavior)
+
+#### Important Notes
+
+**Limitations:**
+- Only the `transaction` table is written to the secondary database
+- The `activity` table must remain in the main database because it's populated by PostgreSQL triggers
+- Both databases should be PostgreSQL instances
+
+**Error Resilience:**
+All audit write operations are wrapped in error handling to ensure that failures in audit logging do not impact your main application transactions. Audit errors are logged but do not cause exceptions.
+
+```python
+# Example: Main transaction succeeds even if audit database is down
+user = User(name="John Doe")
+db.session.add(user)
+db.session.commit()  # Succeeds regardless of audit database status
+```
+
 ### Changing the AuditLogger schema
 
 The `activity` and `transaction` tables are created in the `public` schema by default.
