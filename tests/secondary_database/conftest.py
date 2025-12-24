@@ -54,6 +54,8 @@ def test_client():
 
         # Create audit tables on secondary database
         with audit_logger._audit_engine.begin() as connection:
+            # Enable btree_gist extension on audit database
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
             # Create the transaction table on the audit database
             AuditLogTransaction.metadata.create_all(bind=connection)
 

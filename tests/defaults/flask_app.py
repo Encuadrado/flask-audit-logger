@@ -60,7 +60,7 @@ app.debug = True
 db.init_app(app)
 login_manager.init_app(app)
 
-audit_logger = AuditLogger(db)
+audit_logger = AuditLogger(db, actor_cls="User")
 AuditLogActivity = audit_logger.activity_cls
 
 
