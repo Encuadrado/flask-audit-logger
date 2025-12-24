@@ -326,7 +326,11 @@ class AuditLogger(object):
 
     def _collect_entity_changes(self, session, flush_context):
         """Collect entity changes before they are flushed."""
+        # Get the native transaction ID from the main session
+        native_tx_id = session.execute(func.txid_current()).scalar()
+        
         changes = {
+            'native_transaction_id': native_tx_id,
             'inserts': [],
             'updates': [],
             'deletes': []
@@ -465,33 +469,42 @@ class AuditLogger(object):
             if not all_changes:
                 return
             
+            # Get the native transaction ID from the changes
+            native_tx_id = changes['native_transaction_id']
+            
             # Prepare activity records for insertion
             for change in all_changes:
                 # Skip if no data changes
                 if not change['changed_data'] and not change['old_data']:
                     continue
                 
-                # Use SQL insert statement with function calls for dynamic values
-                values = {
-                    'schema': change['schema'],
-                    'table_name': change['table_name'],
-                    'relid': None,  # Optional field
-                    'issued_at': text("now() AT TIME ZONE 'UTC'"),
-                    'native_transaction_id': func.txid_current(),
-                    'verb': change['verb'],
-                    'old_data': change['old_data'],
-                    'changed_data': change['changed_data'],
-                    'transaction_id': select(self.transaction_cls.id).where(
-                        self.transaction_cls.native_transaction_id == func.txid_current()
-                    ).order_by(self.transaction_cls.issued_at.desc()).limit(1).scalar_subquery(),
-                }
-                
-                stmt = insert(self.activity_cls).values(**values)
-                
-                # Execute on appropriate database
+                # Look up the transaction_id using the native_transaction_id
+                # This query needs to be executed in the audit database context
                 if self._audit_engine and self._audit_session_factory:
                     audit_session = self._audit_session_factory()
                     try:
+                        # Get the transaction ID from the audit database
+                        transaction_id = audit_session.scalar(
+                            select(self.transaction_cls.id)
+                            .where(self.transaction_cls.native_transaction_id == native_tx_id)
+                            .order_by(self.transaction_cls.issued_at.desc())
+                            .limit(1)
+                        )
+                        
+                        # Use SQL insert statement with function calls for dynamic values
+                        values = {
+                            'schema': change['schema'],
+                            'table_name': change['table_name'],
+                            'relid': None,  # Optional field
+                            'issued_at': text("now() AT TIME ZONE 'UTC'"),
+                            'native_transaction_id': native_tx_id,
+                            'verb': change['verb'],
+                            'old_data': change['old_data'],
+                            'changed_data': change['changed_data'],
+                            'transaction_id': transaction_id,
+                        }
+                        
+                        stmt = insert(self.activity_cls).values(**values)
                         audit_session.execute(stmt)
                         audit_session.commit()
                     except Exception as audit_error:
@@ -500,6 +513,22 @@ class AuditLogger(object):
                     finally:
                         audit_session.close()
                 else:
+                    # For main database, use subquery approach
+                    values = {
+                        'schema': change['schema'],
+                        'table_name': change['table_name'],
+                        'relid': None,  # Optional field
+                        'issued_at': text("now() AT TIME ZONE 'UTC'"),
+                        'native_transaction_id': native_tx_id,
+                        'verb': change['verb'],
+                        'old_data': change['old_data'],
+                        'changed_data': change['changed_data'],
+                        'transaction_id': select(self.transaction_cls.id).where(
+                            self.transaction_cls.native_transaction_id == native_tx_id
+                        ).order_by(self.transaction_cls.issued_at.desc()).limit(1).scalar_subquery(),
+                    }
+                    
+                    stmt = insert(self.activity_cls).values(**values)
                     session.execute(stmt)
                     
         except Exception as e:
