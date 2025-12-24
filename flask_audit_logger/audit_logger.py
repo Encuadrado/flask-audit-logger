@@ -1,3 +1,4 @@
+import logging
 import os
 import string
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Integer,
     Table,
     Text,
+    create_engine,
     event,
     func,
     inspect,
@@ -30,6 +32,7 @@ from sqlalchemy.sql.elements import TextClause
 from flask_audit_logger import alembic_hooks
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
 
 
 class ImproperlyConfigured(Exception):
@@ -76,6 +79,8 @@ class PGTrigger:
 class AuditLogger(object):
     _actor_cls = None
     writer = None
+    _audit_engine = None
+    _audit_session_factory = None
 
     def __init__(
         self,
@@ -84,6 +89,7 @@ class AuditLogger(object):
         get_client_addr=None,
         actor_cls=None,
         schema=None,
+        audit_db_uri=None,
     ):
         self._actor_cls = actor_cls or "User"
         self.get_actor_id = get_actor_id or _default_actor_id
@@ -91,11 +97,37 @@ class AuditLogger(object):
         self.schema = schema or "public"
         self.audit_logger_disabled = False
         self.db = db
-        self.transaction_cls = _transaction_model_factory(db.Model, schema, self.actor_cls)
-        self.activity_cls = _activity_model_factory(db.Model, schema, self.transaction_cls)
+        self.audit_db_uri = audit_db_uri
+        
+        # Set up secondary database connection if configured
+        if audit_db_uri:
+            self._setup_audit_database(audit_db_uri)
+        
+        self.transaction_cls = _transaction_model_factory(
+            db.Model, schema, self.actor_cls
+        )
+        self.activity_cls = _activity_model_factory(
+            db.Model, schema, self.transaction_cls
+        )
         self.versioned_tables = _detect_versioned_tables(db)
         self.attach_listeners()
         self.initialize_alembic_hooks()
+    
+    def _setup_audit_database(self, audit_db_uri):
+        """Set up the secondary database connection for audit logs."""
+        try:
+            from sqlalchemy.orm import sessionmaker
+            
+            # Create engine for the audit database
+            self._audit_engine = create_engine(audit_db_uri)
+            
+            # Create session factory for audit database
+            self._audit_session_factory = sessionmaker(bind=self._audit_engine)
+            
+            logger.info(f"Audit database configured at: {audit_db_uri}")
+        except Exception as e:
+            logger.error(f"Failed to setup audit database: {e}")
+            raise ImproperlyConfigured(f"Could not configure audit database: {e}")
 
     def attach_listeners(self):
         """Listeners save transaction records with actor_ids when versioned tables are affected.
@@ -285,7 +317,27 @@ class AuditLogger(object):
             .values(**values)
             .on_conflict_do_nothing(constraint="transaction_unique_native_tx_id")
         )
-        session.execute(stmt)
+        
+        # Execute on secondary database if configured, otherwise use main session
+        try:
+            if self._audit_engine and self._audit_session_factory:
+                # Use separate session for secondary audit database
+                audit_session = self._audit_session_factory()
+                try:
+                    audit_session.execute(stmt)
+                    audit_session.commit()
+                except Exception as e_inner:
+                    audit_session.rollback()
+                    raise e_inner
+                finally:
+                    audit_session.close()
+            else:
+                # Use main database session
+                session.execute(stmt)
+        except Exception as e:
+            # Log the error but don't fail the main transaction
+            logger.error(f"Failed to save audit transaction: {e}", exc_info=True)
+            # Don't re-raise - audit logging failures should not break the application
 
     @property
     def actor_cls(self):
