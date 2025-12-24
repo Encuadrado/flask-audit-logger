@@ -389,7 +389,7 @@ def _transaction_model_factory(base, schema, actor_cls):
                 ),
                 name="transaction_unique_native_tx_id",
             ),
-            {"schema": schema},
+            {"schema": schema, "extend_existing": True},
         )
 
         def __repr__(self):
@@ -403,7 +403,7 @@ def _transaction_model_factory(base, schema, actor_cls):
 def _activity_model_factory(base, schema_name, transaction_cls):
     class AuditLogActivity(base):
         __tablename__ = "activity"
-        __table_args__ = {"schema": schema_name}
+        __table_args__ = {"schema": schema_name, "extend_existing": True}
 
         id = Column(BigInteger, primary_key=True)
         schema = Column(Text)
