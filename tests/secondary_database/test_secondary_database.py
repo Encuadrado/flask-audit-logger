@@ -13,11 +13,17 @@ from tests.secondary_database.flask_app import (
 
 @pytest.mark.usefixtures("test_client")
 class TestSecondaryAuditDatabase:
-    """Test that audit logs are written to the secondary database."""
+    """Test that audit logs are written to the secondary database.
+
+    Note: These tests access private attributes (_audit_session_factory) to verify
+    that transactions are written to the correct database. This is intentional as
+    we need to query the secondary database directly to verify the implementation.
+    """
 
     def test_transaction_written_to_secondary_database(self, user):
         """Test that transaction records are written to the secondary audit database."""
         # Query the secondary database directly for transaction records
+        # Note: Using _audit_session_factory directly to access secondary DB
         with audit_logger._audit_session_factory() as audit_session:
             transaction_count = audit_session.scalar(
                 select(func.count()).select_from(AuditLogTransaction)
@@ -30,27 +36,26 @@ class TestSecondaryAuditDatabase:
             assert transaction.native_transaction_id > 0
 
     def test_main_database_does_not_have_transaction_records(self, user):
-        """Test that transaction records are NOT in the main database."""
-        # Try to query transaction table from main database
-        # This would fail if the table doesn't exist or should return 0 records
-        try:
-            # Check if the transaction table exists in main database
-            with db.engine.connect() as connection:
-                result = connection.execute(
-                    text(
-                        "SELECT COUNT(*) FROM information_schema.tables "
-                        "WHERE table_name = 'transaction' AND table_schema = 'public'"
-                    )
-                )
-                table_exists = result.scalar() > 0
+        """Test that transaction records are NOT in the main database.
 
-                if table_exists:
-                    # If table exists in main DB, it should be empty or have activity records
-                    # but the transaction we just created should only be in audit DB
-                    pass
-        except Exception:
-            # If table doesn't exist in main DB, that's expected
-            pass
+        Since the transaction table is created in the secondary database,
+        it should not exist in the main database schema.
+        """
+        # Check that transaction table doesn't exist in main database's public schema
+        with db.engine.connect() as connection:
+            result = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_name = 'transaction' AND table_schema = 'public'"
+                )
+            )
+            table_exists = result.scalar() > 0
+
+            # With secondary database config, transaction table should NOT be in main DB
+            assert not table_exists, (
+                "Transaction table should not exist in main database "
+                "when using secondary audit database"
+            )
 
     def test_multiple_transactions_to_secondary_database(self):
         """Test that multiple transactions are correctly written to secondary database."""

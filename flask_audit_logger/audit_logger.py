@@ -330,9 +330,9 @@ class AuditLogger(object):
                 try:
                     audit_session.execute(stmt)
                     audit_session.commit()
-                except Exception as e_inner:
+                except Exception as audit_error:
                     audit_session.rollback()
-                    raise e_inner
+                    raise audit_error
                 finally:
                     audit_session.close()
             else:
