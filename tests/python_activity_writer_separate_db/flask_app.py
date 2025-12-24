@@ -15,6 +15,10 @@ db_password = os.environ.get("FLASK_AUDIT_LOGGER_TEST_PASSWORD", "")
 db_name = os.environ.get("FLASK_AUDIT_LOGGER_TEST_DB", "flask_audit_logger_test")
 db_conn_str = f"postgresql://{db_user}:{db_password}@localhost/{db_name}"
 
+# Secondary database for audit logs (both transaction and activity)
+audit_db_name = os.environ.get("FLASK_AUDIT_LOGGER_AUDIT_DB", "flask_audit_logger_audit_test")
+audit_db_conn_str = f"postgresql://{db_user}:{db_password}@localhost/{audit_db_name}"
+
 
 class Base(MappedAsDataclass, DeclarativeBase):
     pass
@@ -39,13 +43,6 @@ class Article(db.Model):
     name: Mapped[str]
 
 
-class DynamicModificationModel(db.Model):
-    __tablename__ = "dynamic_modification_model"
-    __table_args__ = ({"info": {"versioned": {}}},)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-
-
 @login_manager.user_loader
 def load_user(id):
     return db.session.get(User, id)
@@ -60,8 +57,12 @@ app.debug = True
 db.init_app(app)
 login_manager.init_app(app)
 
-audit_logger = AuditLogger(db, actor_cls="User")
+# Use Python-based activity writer with separate audit database for both tables
+audit_logger = AuditLogger(
+    db, use_python_activity_writer=True, audit_db_uri=audit_db_conn_str, actor_cls="User"
+)
 AuditLogActivity = audit_logger.activity_cls
+AuditLogTransaction = audit_logger.transaction_cls
 
 
 @app.post("/article")

@@ -5,8 +5,9 @@ This package tracks changes to database records within specified tables.
 The current user affecting the target table will also be recorded.
 
 - Stores versioned records with old and changed data in an `activity` table
-- Uses database triggers to record activity records, keeping INSERTs, UPDATEs and DELETEs as fast as possible
+- Uses database triggers (default) or Python-based events to record activity records
 - Uses SQLAlchemy events to track actor IDs in a `transaction` table
+- Supports writing audit logs to a separate database for improved scalability
 - Tables and triggers can be easily configured using Alembic migrations
 
 This project was forked from [PostgreSQL-Audit](https://github.com/kvesteri/postgresql-audit), but does not attempt to maintain backwards compatability.
@@ -139,10 +140,12 @@ with audit_logger._audit_engine.begin() as connection:
 
 #### Important Notes
 
-**Limitations:**
+**Limitations (when using default PostgreSQL triggers):**
 - Only the `transaction` table is written to the secondary database
 - The `activity` table must remain in the main database because it's populated by PostgreSQL triggers
 - Both databases should be PostgreSQL instances
+
+**Workaround:** Use the Python-based activity writer (see below) to write both transaction and activity tables to the secondary database.
 
 **Error Resilience:**
 All audit write operations are wrapped in error handling to ensure that failures in audit logging do not impact your main application transactions. Audit errors are logged but do not cause exceptions.
@@ -153,6 +156,61 @@ user = User(name="John Doe")
 db.session.add(user)
 db.session.commit()  # Succeeds regardless of audit database status
 ```
+
+### Using Python-Based Activity Writer
+
+By default, Flask-Audit-Logger uses PostgreSQL triggers to write activity records. This approach is fast and reliable, but requires the activity table to be in the same database as your versioned tables.
+
+For more flexibility, you can use the Python-based activity writer instead of PostgreSQL triggers:
+
+```python
+# In app/models.py
+from flask_audit_logger import AuditLogger
+
+# Use Python-based activity writer
+audit_logger = AuditLogger(db, use_python_activity_writer=True)
+```
+
+#### Benefits
+
+- **Separate Database Support**: Activity records can be written to a different database than your main tables
+- **Cross-Database Compatibility**: Works with databases that don't support PostgreSQL triggers
+- **Simplified Migrations**: No need to manage trigger creation/updates in migrations
+
+#### How It Works
+
+- Activity records are created during SQLAlchemy's `before_flush` and `after_flush` events
+- INSERT, UPDATE, and DELETE operations are captured in Python code
+- Old and changed data is extracted from SQLAlchemy's change tracking
+- Records are written using SQL INSERT statements
+
+#### Configuration
+
+When using Python-based activity writer with a secondary audit database:
+
+```python
+# Both transaction and activity tables go to the secondary database
+audit_logger = AuditLogger(
+    db,
+    use_python_activity_writer=True,
+    audit_db_uri="postgresql://user:password@audit-db-host/audit_db"
+)
+```
+
+#### Important Notes
+
+**When to Use:**
+- You want both transaction and activity tables in a separate database
+- You need cross-database flexibility
+- You want to avoid PostgreSQL trigger management
+
+**Limitations:**
+- Slightly lower performance than triggers (Python overhead)
+- Raw SQL inserts (via `session.execute(insert(...))`) are not tracked automatically
+- Entities must be loaded from database before update for complete old_data tracking
+
+**Performance:**
+The Python-based writer adds minimal overhead. For most applications, the difference is negligible. If you need maximum performance and are comfortable with triggers, use the default trigger-based approach.
 
 ### Changing the AuditLogger schema
 

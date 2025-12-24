@@ -142,13 +142,25 @@ def setup_functions_and_triggers(audit_logger):
 
         funcs_in_db = {row.signature for row in autogen_context.connection.execute(funcs_sql)}
 
+        # When using Python activity writer, skip the create_activity function
+        # as it's only needed for database triggers
         funcs_in_app = set(audit_logger.functions_by_signature.keys())
+        if audit_logger.use_python_activity_writer:
+            # Remove create_activity from the functions to manage
+            funcs_in_app = {f for f in funcs_in_app if f != "create_activity()"}
 
         should_add = funcs_in_app - funcs_in_db
         should_remove = funcs_in_db - funcs_in_app
 
         for func in audit_logger.pg_functions:
             sig = func.signature
+            # Skip create_activity if using Python activity writer
+            if audit_logger.use_python_activity_writer and sig == "create_activity()":
+                # If it exists in DB, mark it for removal
+                if sig in funcs_in_db:
+                    upgrade_ops.ops.append(RemoveAuditLoggerFunctionOp(sig))
+                continue
+
             if sig in should_add:
                 upgrade_ops.ops.append(InitAuditLoggerFunctionOp(sig))
             if sig in should_remove:
@@ -157,6 +169,33 @@ def setup_functions_and_triggers(audit_logger):
     Trigger = namedtuple("Trigger", ["table", "trigger_name", "definition"])
 
     def check_triggers(autogen_context, upgrade_ops, schemas):
+        # Skip trigger creation if using Python-based activity writer
+        if audit_logger.use_python_activity_writer:
+            # Remove any existing triggers if they exist
+            triggers_sql = text(
+                """
+                SELECT event_object_table, trigger_name, action_statement
+                FROM information_schema.triggers
+                WHERE trigger_name LIKE 'audit_trigger%'
+            """
+            )
+
+            triggers_per_table = defaultdict(list)
+            for row in autogen_context.connection.execute(triggers_sql):
+                trigger = Trigger(*row)
+                triggers_per_table[trigger.table].append(trigger)
+
+            # Remove triggers for any tables that have them
+            for table_name, triggers in triggers_per_table.items():
+                upgrade_ops.ops.append(
+                    RemoveAuditLoggerTriggers(
+                        table_name,
+                        excluded_columns=_get_existing_excluded_columns(triggers[0].definition),
+                    )
+                )
+            return
+
+        # Original trigger logic for when using database triggers
         triggers_sql = text(
             """
             SELECT event_object_table, trigger_name, action_statement
