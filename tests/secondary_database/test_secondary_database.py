@@ -99,41 +99,34 @@ class TestSecondaryAuditDatabase:
 
     def test_audit_with_invalid_audit_database(self, monkeypatch):
         """Test graceful handling when audit database connection fails."""
-
-        # Mock a broken session execute
-        def broken_execute(*args, **kwargs):
-            raise Exception("Database connection lost")
-
         # Create a user - this should succeed even if audit fails
         user = User(id=20, name="ResilientUser")
 
-        # Patch the audit session's execute method to fail
-        if audit_logger._audit_session_factory:
-            original_factory = audit_logger._audit_session_factory
+        # Create a failing session factory
+        class FailingSession:
+            def __enter__(self):
+                return self
 
-            class FailingSession:
-                def __enter__(self):
-                    return self
+            def __exit__(self, *args):
+                pass
 
-                def __exit__(self, *args):
-                    pass
+            def execute(self, *args, **kwargs):
+                raise Exception("Audit database unreachable")
 
-                def execute(self, *args, **kwargs):
-                    raise Exception("Audit database unreachable")
+            def commit(self):
+                pass
 
-                def commit(self):
-                    pass
+            def rollback(self):
+                pass
 
-                def rollback(self):
-                    pass
+            def close(self):
+                pass
 
-                def close(self):
-                    pass
+        def failing_factory():
+            return FailingSession()
 
-            def failing_factory():
-                return FailingSession()
-
-            monkeypatch.setattr(audit_logger, "_audit_session_factory", failing_factory)
+        # Patch the audit session factory to fail
+        monkeypatch.setattr(audit_logger, "_audit_session_factory", failing_factory)
 
         db.session.add(user)
         db.session.commit()  # Should succeed despite audit failure

@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, ExcludeConstraint, insert
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import ColumnProperty, relationship
+from sqlalchemy.orm import ColumnProperty, relationship, sessionmaker
 from sqlalchemy.orm.session import Session
 from sqlalchemy.sql.elements import TextClause
 
@@ -112,15 +112,23 @@ class AuditLogger(object):
     def _setup_audit_database(self, audit_db_uri):
         """Set up the secondary database connection for audit logs."""
         try:
-            from sqlalchemy.orm import sessionmaker
-
             # Create engine for the audit database
             self._audit_engine = create_engine(audit_db_uri)
 
             # Create session factory for audit database
             self._audit_session_factory = sessionmaker(bind=self._audit_engine)
 
-            logger.info(f"Audit database configured at: {audit_db_uri}")
+            # Log configuration without exposing credentials
+            # Parse the URI to get just the database name
+            try:
+                from sqlalchemy.engine.url import make_url
+
+                url = make_url(audit_db_uri)
+                safe_info = f"database={url.database}, host={url.host or 'localhost'}"
+            except Exception:
+                safe_info = "configured"
+
+            logger.info(f"Audit database {safe_info}")
         except Exception as e:
             logger.error(f"Failed to setup audit database: {e}")
             raise ImproperlyConfigured(f"Could not configure audit database: {e}")
