@@ -91,7 +91,7 @@ class AuditLogger(object):
         schema=None,
         audit_db_uri=None,
     ):
-        self._actor_cls = actor_cls if actor_cls is not None else "User"
+        self._actor_cls = actor_cls
         self.get_actor_id = get_actor_id or _default_actor_id
         self.get_client_addr = get_client_addr or _default_client_addr
         self.schema = schema or "public"
