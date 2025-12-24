@@ -21,6 +21,7 @@ ALEMBIC_CONFIG = REPO_ROOT / "tests" / "secondary_database" / "alembic_config"
 def test_client():
     """Set up test client with both main and audit databases."""
     from contextlib import contextmanager
+
     from tests.utils import clear_alembic_migrations, run_alembic_command
 
     test_client = app.test_client()
@@ -30,11 +31,11 @@ def test_client():
         """Run migrations on both main and audit databases."""
         # Clear main database
         clear_alembic_migrations(db, ALEMBIC_CONFIG)
-        
+
         # Clear audit database
         with audit_logger._audit_engine.begin() as connection:
             connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"))
-        
+
         # Create migrations for main database
         run_alembic_command(
             engine=db.engine,
@@ -50,7 +51,7 @@ def test_client():
             command_kwargs={"revision": "head"},
             alembic_config=ALEMBIC_CONFIG,
         )
-        
+
         # Create audit tables on secondary database
         with audit_logger._audit_engine.begin() as connection:
             # Create the transaction table on the audit database
@@ -66,7 +67,7 @@ def test_client():
             alembic_config=ALEMBIC_CONFIG,
         )
         clear_alembic_migrations(db, ALEMBIC_CONFIG)
-        
+
         with audit_logger._audit_engine.begin() as connection:
             connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
 

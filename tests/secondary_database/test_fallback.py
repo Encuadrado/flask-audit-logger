@@ -1,4 +1,5 @@
 """Tests for fallback behavior when no secondary database is configured."""
+
 import pytest
 from sqlalchemy import func, select
 
@@ -24,23 +25,23 @@ class TestAuditLoggerFallback:
         user = User(id=1, name="TestUser", age=25)
         db.session.add(user)
         db.session.commit()
-        
+
         # Read
         fetched_user = db.session.get(User, 1)
         assert fetched_user.name == "TestUser"
-        
+
         # Update
         fetched_user.name = "UpdatedUser"
         db.session.commit()
-        
+
         # Verify audit trail
         activities = db.session.scalars(select(AuditLogActivity)).all()
         assert len(activities) >= 2  # At least insert and update
-        
+
         # Delete
         db.session.delete(fetched_user)
         db.session.commit()
-        
+
         # Verify delete was audited
         activities = db.session.scalars(select(AuditLogActivity)).all()
         assert len(activities) >= 3  # insert, update, delete
@@ -49,12 +50,10 @@ class TestAuditLoggerFallback:
         """Test that activity records match the number of operations."""
         # Create multiple users
         for i in range(5):
-            user = User(id=i+1, name=f"User{i}")
+            user = User(id=i + 1, name=f"User{i}")
             db.session.add(user)
             db.session.commit()
-        
+
         # Check activity count
-        activity_count = db.session.scalar(
-            select(func.count()).select_from(AuditLogActivity)
-        )
+        activity_count = db.session.scalar(select(func.count()).select_from(AuditLogActivity))
         assert activity_count == 5

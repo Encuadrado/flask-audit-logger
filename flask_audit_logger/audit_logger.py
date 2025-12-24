@@ -98,32 +98,28 @@ class AuditLogger(object):
         self.audit_logger_disabled = False
         self.db = db
         self.audit_db_uri = audit_db_uri
-        
+
         # Set up secondary database connection if configured
         if audit_db_uri:
             self._setup_audit_database(audit_db_uri)
-        
-        self.transaction_cls = _transaction_model_factory(
-            db.Model, schema, self.actor_cls
-        )
-        self.activity_cls = _activity_model_factory(
-            db.Model, schema, self.transaction_cls
-        )
+
+        self.transaction_cls = _transaction_model_factory(db.Model, schema, self.actor_cls)
+        self.activity_cls = _activity_model_factory(db.Model, schema, self.transaction_cls)
         self.versioned_tables = _detect_versioned_tables(db)
         self.attach_listeners()
         self.initialize_alembic_hooks()
-    
+
     def _setup_audit_database(self, audit_db_uri):
         """Set up the secondary database connection for audit logs."""
         try:
             from sqlalchemy.orm import sessionmaker
-            
+
             # Create engine for the audit database
             self._audit_engine = create_engine(audit_db_uri)
-            
+
             # Create session factory for audit database
             self._audit_session_factory = sessionmaker(bind=self._audit_engine)
-            
+
             logger.info(f"Audit database configured at: {audit_db_uri}")
         except Exception as e:
             logger.error(f"Failed to setup audit database: {e}")
@@ -317,7 +313,7 @@ class AuditLogger(object):
             .values(**values)
             .on_conflict_do_nothing(constraint="transaction_unique_native_tx_id")
         )
-        
+
         # Execute on secondary database if configured, otherwise use main session
         try:
             if self._audit_engine and self._audit_session_factory:
