@@ -3,8 +3,9 @@ from flask_login import login_user
 from sqlalchemy import text
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-from tests.secondary_database.flask_app import (
+from tests.python_activity_writer_separate_db.flask_app import (
     Article,
+    AuditLogActivity,
     AuditLogTransaction,
     User,
     app,
@@ -13,7 +14,7 @@ from tests.secondary_database.flask_app import (
 )
 from tests.utils import REPO_ROOT
 
-ALEMBIC_CONFIG = REPO_ROOT / "tests" / "secondary_database" / "alembic_config"
+ALEMBIC_CONFIG = REPO_ROOT / "tests" / "python_activity_writer_separate_db" / "alembic_config"
 
 
 @pytest.fixture(scope="session")
@@ -55,8 +56,9 @@ def test_client():
         with audit_logger._audit_engine.begin() as connection:
             # Enable btree_gist extension on audit database
             connection.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
-            # Create the transaction table on the audit database
+            # Create the transaction and activity tables on the audit database
             AuditLogTransaction.metadata.create_all(bind=connection)
+            AuditLogActivity.metadata.create_all(bind=connection)
 
         yield
 
@@ -102,6 +104,11 @@ def user():
     user = User(id=1, name="Jan", age=15)
     db.session.add(user)
     db.session.commit()
+    # Expire the user to force reload on next access
+    # This ensures history tracking works correctly
+    db.session.expire(user)
+    # Access an attribute to trigger reload
+    _ = user.name
     yield user
 
 

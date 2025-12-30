@@ -39,13 +39,6 @@ class Article(db.Model):
     name: Mapped[str]
 
 
-class DynamicModificationModel(db.Model):
-    __tablename__ = "dynamic_modification_model"
-    __table_args__ = ({"info": {"versioned": {}}},)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-
-
 @login_manager.user_loader
 def load_user(id):
     return db.session.get(User, id)
@@ -60,8 +53,10 @@ app.debug = True
 db.init_app(app)
 login_manager.init_app(app)
 
-audit_logger = AuditLogger(db, actor_cls="User")
+# Use Python-based activity writer instead of PostgreSQL triggers
+audit_logger = AuditLogger(db, use_python_activity_writer=True, actor_cls="User")
 AuditLogActivity = audit_logger.activity_cls
+AuditLogTransaction = audit_logger.transaction_cls
 
 
 @app.post("/article")

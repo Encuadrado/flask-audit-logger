@@ -21,6 +21,7 @@ from sqlalchemy import (
     func,
     inspect,
     literal_column,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, ExcludeConstraint, insert
@@ -90,6 +91,7 @@ class AuditLogger(object):
         actor_cls=None,
         schema=None,
         audit_db_uri=None,
+        use_python_activity_writer=False,
     ):
         self._actor_cls = actor_cls
         self.get_actor_id = get_actor_id or _default_actor_id
@@ -98,6 +100,7 @@ class AuditLogger(object):
         self.audit_logger_disabled = False
         self.db = db
         self.audit_db_uri = audit_db_uri
+        self.use_python_activity_writer = use_python_activity_writer
 
         # Set up secondary database connection if configured
         if audit_db_uri:
@@ -139,6 +142,9 @@ class AuditLogger(object):
         when an insert()/update()/delete() is passed to session.execute()."""
         event.listen(Session, "before_flush", self.receive_before_flush)
         event.listen(Session, "do_orm_execute", self.receive_do_orm_execute)
+        # Add after_flush listener for Python-based activity writer
+        if self.use_python_activity_writer:
+            event.listen(Session, "after_flush", self.receive_after_flush)
 
     def initialize_alembic_hooks(self):
         alembic_hooks.setup_schema(self)
@@ -304,6 +310,231 @@ class AuditLogger(object):
     def receive_before_flush(self, session, flush_context, instances):
         if _is_session_modified(session, self.versioned_tables):
             self.save_transaction(session)
+            # For Python-based activity writer, collect entity changes before flush
+            if self.use_python_activity_writer:
+                self._collect_entity_changes(session, flush_context)
+
+    def receive_after_flush(self, session, flush_context):
+        """Save activity records after flush when using Python-based activity writer."""
+        if self.audit_logger_disabled:
+            return
+
+        # Retrieve the changes collected before flush
+        if hasattr(flush_context, "_audit_logger_changes"):
+            changes = flush_context._audit_logger_changes
+            self.save_activity_records_after_flush(session, changes)
+
+    def _collect_entity_changes(self, session, flush_context):
+        """Collect entity changes before they are flushed."""
+        # Get the native transaction ID from the main session
+        native_tx_id = session.execute(func.txid_current()).scalar()
+
+        changes = {
+            "native_transaction_id": native_tx_id,
+            "inserts": [],
+            "updates": [],
+            "deletes": [],
+        }
+
+        # Collect new entities (INSERTs)
+        for entity in session.new:
+            if entity.__table__ not in self.versioned_tables:
+                continue
+            changes["inserts"].append(self._capture_insert_data(entity))
+
+        # Collect modified entities (UPDATEs)
+        for entity in session.dirty:
+            if entity.__table__ not in self.versioned_tables:
+                continue
+            if not _is_entity_modified(entity):
+                continue
+            changes["updates"].append(self._capture_update_data(entity))
+
+        # Collect deleted entities (DELETEs)
+        for entity in session.deleted:
+            if entity.__table__ not in self.versioned_tables:
+                continue
+            changes["deletes"].append(self._capture_delete_data(entity))
+
+        # Store changes on flush_context for retrieval after flush
+        flush_context._audit_logger_changes = changes
+
+    def _capture_insert_data(self, entity):
+        """Capture data for an INSERT operation."""
+        table = entity.__table__
+        versioned_info = table.info.get("versioned", {})
+        excluded_columns = set(versioned_info.get("exclude", []))
+
+        changed_data = {}
+        for column in table.columns:
+            if column.name in excluded_columns:
+                continue
+            value = getattr(entity, column.name, None)
+            if value is not None:
+                changed_data[column.name] = value
+
+        return {
+            "schema": table.schema or "public",
+            "table_name": table.name,
+            "verb": "insert",
+            "old_data": {},
+            "changed_data": changed_data,
+        }
+
+    def _capture_update_data(self, entity):
+        """Capture data for an UPDATE operation."""
+        table = entity.__table__
+        versioned_info = table.info.get("versioned", {})
+        excluded_columns = set(versioned_info.get("exclude", []))
+
+        # For updates, we need to capture the complete old_data (all fields before change)
+        # and only the changed fields in changed_data
+        old_data = {}
+        changed_data = {}
+
+        insp = inspect(entity)
+
+        # Iterate through all columns to build old_data and changed_data
+        for column in table.columns:
+            if column.name in excluded_columns:
+                continue
+
+            # Get the attribute for this column
+            attr = insp.attrs.get(column.name)
+            if not attr:
+                continue
+
+            history = attr.history
+            if history.has_changes():
+                # This column was modified
+                # For the old value, try deleted first, then unchanged
+                if history.deleted:
+                    old_data[column.name] = history.deleted[0]
+                elif history.unchanged:
+                    old_data[column.name] = history.unchanged[0]
+                else:
+                    # This shouldn't happen but handle it - maybe it's NULL -> value
+                    old_data[column.name] = None
+
+                if history.added:
+                    # This is the new value
+                    changed_data[column.name] = history.added[0]
+            else:
+                # This column was not modified, use current value for old_data
+                value = getattr(entity, column.name, None)
+                if value is not None:
+                    old_data[column.name] = value
+
+        return {
+            "schema": table.schema or "public",
+            "table_name": table.name,
+            "verb": "update",
+            "old_data": old_data,
+            "changed_data": changed_data,
+        }
+
+    def _capture_delete_data(self, entity):
+        """Capture data for a DELETE operation."""
+        table = entity.__table__
+        versioned_info = table.info.get("versioned", {})
+        excluded_columns = set(versioned_info.get("exclude", []))
+
+        old_data = {}
+        for column in table.columns:
+            if column.name in excluded_columns:
+                continue
+            value = getattr(entity, column.name, None)
+            if value is not None:
+                old_data[column.name] = value
+
+        return {
+            "schema": table.schema or "public",
+            "table_name": table.name,
+            "verb": "delete",
+            "old_data": old_data,
+            "changed_data": {},
+        }
+
+    def save_activity_records_after_flush(self, session, changes):
+        """Save activity records after flush using direct SQL inserts."""
+        if self.audit_logger_disabled:
+            return
+
+        try:
+            all_changes = []
+            all_changes.extend(changes["inserts"])
+            all_changes.extend(changes["updates"])
+            all_changes.extend(changes["deletes"])
+
+            if not all_changes:
+                return
+
+            # Get the native transaction ID from the changes
+            native_tx_id = changes["native_transaction_id"]
+
+            # Prepare activity records for insertion
+            for change in all_changes:
+                # Skip if no data changes
+                if not change["changed_data"] and not change["old_data"]:
+                    continue
+
+                # Look up the transaction_id using the native_transaction_id
+                # This query needs to be executed in the audit database context
+                if self._audit_engine and self._audit_session_factory:
+                    audit_session = self._audit_session_factory()
+                    try:
+                        # Get the transaction ID from the audit database
+                        transaction_id = audit_session.scalar(
+                            select(self.transaction_cls.id)
+                            .where(self.transaction_cls.native_transaction_id == native_tx_id)
+                            .order_by(self.transaction_cls.issued_at.desc())
+                            .limit(1)
+                        )
+
+                        # Use SQL insert statement with function calls for dynamic values
+                        values = {
+                            "schema": change["schema"],
+                            "table_name": change["table_name"],
+                            "relid": None,  # Optional field
+                            "issued_at": text("now() AT TIME ZONE 'UTC'"),
+                            "native_transaction_id": native_tx_id,
+                            "verb": change["verb"],
+                            "old_data": change["old_data"],
+                            "changed_data": change["changed_data"],
+                            "transaction_id": transaction_id,
+                        }
+
+                        stmt = insert(self.activity_cls).values(**values)
+                        audit_session.execute(stmt)
+                        audit_session.commit()
+                    except Exception as audit_error:
+                        audit_session.rollback()
+                        raise audit_error
+                    finally:
+                        audit_session.close()
+                else:
+                    # For main database, use subquery approach
+                    values = {
+                        "schema": change["schema"],
+                        "table_name": change["table_name"],
+                        "relid": None,  # Optional field
+                        "issued_at": text("now() AT TIME ZONE 'UTC'"),
+                        "native_transaction_id": native_tx_id,
+                        "verb": change["verb"],
+                        "old_data": change["old_data"],
+                        "changed_data": change["changed_data"],
+                        "transaction_id": select(self.transaction_cls.id)
+                        .where(self.transaction_cls.native_transaction_id == native_tx_id)
+                        .order_by(self.transaction_cls.issued_at.desc())
+                        .limit(1)
+                        .scalar_subquery(),
+                    }
+
+                    stmt = insert(self.activity_cls).values(**values)
+                    session.execute(stmt)
+
+        except Exception as e:
+            logger.error(f"Failed to save activity records: {e}", exc_info=True)
 
     def save_transaction(self, session):
         if self.audit_logger_disabled:
