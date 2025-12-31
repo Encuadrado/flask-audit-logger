@@ -510,10 +510,14 @@ class AuditLogger(object):
 
         # For updates, we only need to capture the old values of changed fields in old_data
         # and the new values of changed fields in changed_data
+        # However, we always include primary key columns in changed_data for record identification
         old_data = {}
         changed_data = {}
 
         insp = inspect(entity)
+        
+        # Get primary key column names
+        primary_key_columns = {col.name for col in table.primary_key.columns}
 
         # Iterate through all columns to build old_data and changed_data
         for column in table.columns:
@@ -540,6 +544,11 @@ class AuditLogger(object):
                 if history.added:
                     # This is the new value
                     changed_data[column.name] = _make_json_serializable(history.added[0])
+            elif column.name in primary_key_columns:
+                # Always include primary key columns even if unchanged (for record identification)
+                value = getattr(entity, column.name, None)
+                if value is not None:
+                    changed_data[column.name] = _make_json_serializable(value)
 
         return {
             "schema": table.schema or "public",
