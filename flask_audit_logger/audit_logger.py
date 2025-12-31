@@ -338,7 +338,9 @@ class AuditLogger(object):
             self.save_transaction(session, native_tx_id)
             # For Python-based activity writer, collect entity changes before flush
             if self.use_python_activity_writer:
-                self._collect_entity_changes(session, flush_context, native_tx_id)
+                # Store native_tx_id on flush_context for use in _collect_entity_changes
+                flush_context._audit_logger_native_tx_id = native_tx_id
+                self._collect_entity_changes(session, flush_context)
 
     def receive_after_flush(self, session, flush_context):
         """Save activity records after flush when using Python-based activity writer."""
@@ -350,8 +352,15 @@ class AuditLogger(object):
             changes = flush_context._audit_logger_changes
             self.save_activity_records_after_flush(session, changes)
 
-    def _collect_entity_changes(self, session, flush_context, native_tx_id):
+    def _collect_entity_changes(self, session, flush_context):
         """Collect entity changes before they are flushed."""
+        # Get native_tx_id from flush_context if available, otherwise query the session
+        # This ensures we use the main database's transaction ID consistently
+        if hasattr(flush_context, '_audit_logger_native_tx_id'):
+            native_tx_id = flush_context._audit_logger_native_tx_id
+        else:
+            native_tx_id = session.execute(func.txid_current()).scalar()
+
         changes = {
             "native_transaction_id": native_tx_id,
             "inserts": [],
