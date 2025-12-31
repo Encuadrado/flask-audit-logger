@@ -125,6 +125,8 @@ class AuditLogger(object):
         self.db = db
         self.audit_db_uri = audit_db_uri
         self.use_python_activity_writer = use_python_activity_writer
+        # Cache for table OIDs (relid) - these don't change during app lifetime
+        self._relid_cache = {}
 
         # Set up secondary database connection if configured
         if audit_db_uri:
@@ -391,6 +393,93 @@ class AuditLogger(object):
         # Store changes on flush_context for retrieval after flush
         flush_context._audit_logger_changes = changes
 
+    def _get_table_relid(self, session, schema, table_name):
+        """Get the PostgreSQL OID (relid) for a table with caching."""
+        cache_key = (schema, table_name)
+        
+        # Check cache first
+        if cache_key in self._relid_cache:
+            return self._relid_cache[cache_key]
+        
+        # Query the database if not cached
+        try:
+            query = text("""
+                SELECT c.oid 
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = :table_name AND n.nspname = :schema
+            """)
+            result = session.execute(query, {"table_name": table_name, "schema": schema})
+            row = result.fetchone()
+            relid = row[0] if row else None
+            
+            # Cache the result (even if None)
+            self._relid_cache[cache_key] = relid
+            return relid
+        except Exception as e:
+            logger.warning(f"Failed to get relid for {schema}.{table_name}: {e}")
+            return None
+
+    def _get_table_relids_batch(self, session, tables):
+        """Get PostgreSQL OIDs (relids) for multiple tables in a single query.
+        
+        Args:
+            session: Database session
+            tables: List of (schema, table_name) tuples
+            
+        Returns:
+            Dictionary mapping (schema, table_name) -> relid
+        """
+        # Filter out tables already in cache
+        tables_to_query = [(schema, table_name) for schema, table_name in tables 
+                          if (schema, table_name) not in self._relid_cache]
+        
+        if not tables_to_query:
+            # All tables already cached
+            return {key: self._relid_cache[key] for key in tables}
+        
+        try:
+            # Build a query to get all relids at once
+            # Using unnest to pass the table list
+            query = text("""
+                WITH table_list AS (
+                    SELECT 
+                        unnest(:schemas::text[]) AS schema,
+                        unnest(:table_names::text[]) AS table_name
+                )
+                SELECT 
+                    tl.schema,
+                    tl.table_name,
+                    c.oid
+                FROM table_list tl
+                JOIN pg_namespace n ON n.nspname = tl.schema
+                JOIN pg_class c ON c.relname = tl.table_name AND c.relnamespace = n.oid
+            """)
+            
+            schemas = [schema for schema, _ in tables_to_query]
+            table_names = [table_name for _, table_name in tables_to_query]
+            
+            result = session.execute(query, {
+                "schemas": schemas,
+                "table_names": table_names
+            })
+            
+            # Cache all results
+            for row in result:
+                cache_key = (row[0], row[1])
+                self._relid_cache[cache_key] = row[2]
+            
+            # Return all requested relids (from cache)
+            return {key: self._relid_cache.get(key) for key in tables}
+            
+        except Exception as e:
+            logger.warning(f"Failed to batch get relids: {e}")
+            # Fallback to individual queries
+            result = {}
+            for schema, table_name in tables:
+                result[(schema, table_name)] = self._get_table_relid(session, schema, table_name)
+            return result
+
     def _capture_insert_data(self, entity):
         """Capture data for an INSERT operation."""
         table = entity.__table__
@@ -499,6 +588,10 @@ class AuditLogger(object):
             # Get the native transaction ID from the changes
             native_tx_id = changes["native_transaction_id"]
 
+            # Batch fetch all unique table relids to minimize database queries
+            unique_tables = set((change["schema"], change["table_name"]) for change in all_changes)
+            relid_map = self._get_table_relids_batch(session, list(unique_tables))
+
             # Prepare activity records for insertion
             for change in all_changes:
                 # Skip if no data changes
@@ -517,6 +610,9 @@ class AuditLogger(object):
                 # Convert record_id to string if it exists
                 if record_id is not None:
                     record_id = str(record_id)
+
+                # Get the table relid (OID) from the batch result
+                relid = relid_map.get((change["schema"], change["table_name"]))
 
                 # Look up the transaction_id using the native_transaction_id
                 # This query needs to be executed in the audit database context
@@ -541,7 +637,7 @@ class AuditLogger(object):
                         values = {
                             "schema": change["schema"],
                             "table_name": change["table_name"],
-                            "relid": None,  # Optional field
+                            "relid": relid,
                             "issued_at": text("now() AT TIME ZONE 'UTC'"),
                             "native_transaction_id": native_tx_id,
                             "verb": change["verb"],
@@ -564,7 +660,7 @@ class AuditLogger(object):
                     values = {
                         "schema": change["schema"],
                         "table_name": change["table_name"],
-                        "relid": None,  # Optional field
+                        "relid": relid,
                         "issued_at": text("now() AT TIME ZONE 'UTC'"),
                         "native_transaction_id": native_tx_id,
                         "verb": change["verb"],
