@@ -492,14 +492,14 @@ class AuditLogger(object):
                 continue
             value = getattr(entity, column.name, None)
             if value is not None:
-                changed_data[column.name] = _make_json_serializable(value)
+                changed_data[column.name] = value
 
         return {
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "insert",
             "old_data": {},
-            "changed_data": changed_data,
+            "changed_data": _make_json_serializable(changed_data),
         }
 
     def _capture_update_data(self, entity):
@@ -534,28 +534,28 @@ class AuditLogger(object):
                 # This column was modified
                 # For the old value, try deleted first, then unchanged
                 if history.deleted:
-                    old_data[column.name] = _make_json_serializable(history.deleted[0])
+                    old_data[column.name] = history.deleted[0]
                 elif history.unchanged:
-                    old_data[column.name] = _make_json_serializable(history.unchanged[0])
+                    old_data[column.name] = history.unchanged[0]
                 else:
                     # This shouldn't happen but handle it - maybe it's NULL -> value
                     old_data[column.name] = None
 
                 if history.added:
                     # This is the new value
-                    changed_data[column.name] = _make_json_serializable(history.added[0])
+                    changed_data[column.name] = history.added[0]
             elif column.name in primary_key_columns:
                 # Always include primary key columns even if unchanged (for record identification)
                 value = getattr(entity, column.name, None)
                 if value is not None:
-                    changed_data[column.name] = _make_json_serializable(value)
+                    changed_data[column.name] = value
 
         return {
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "update",
-            "old_data": old_data,
-            "changed_data": changed_data,
+            "old_data": _make_json_serializable(old_data),
+            "changed_data": _make_json_serializable(changed_data),
         }
 
     def _capture_delete_data(self, entity):
@@ -570,13 +570,13 @@ class AuditLogger(object):
                 continue
             value = getattr(entity, column.name, None)
             if value is not None:
-                old_data[column.name] = _make_json_serializable(value)
+                old_data[column.name] = value
 
         return {
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "delete",
-            "old_data": old_data,
+            "old_data": _make_json_serializable(old_data),
             "changed_data": {},
         }
 
