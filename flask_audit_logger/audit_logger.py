@@ -502,6 +502,19 @@ class AuditLogger(object):
                 if not change["changed_data"] and not change["old_data"]:
                     continue
 
+                # Extract record_id from the data
+                # For inserts/updates: prefer changed_data, fallback to old_data
+                # For deletes: use old_data
+                record_id = None
+                if change["verb"] == "delete":
+                    record_id = change["old_data"].get("id")
+                else:
+                    record_id = change["changed_data"].get("id") or change["old_data"].get("id")
+                
+                # Convert record_id to string if it exists
+                if record_id is not None:
+                    record_id = str(record_id)
+
                 # Look up the transaction_id using the native_transaction_id
                 # This query needs to be executed in the audit database context
                 if self._audit_engine and self._audit_session_factory:
@@ -515,7 +528,13 @@ class AuditLogger(object):
                             .limit(1)
                         )
 
-                        # Use SQL insert statement with function calls for dynamic values
+                        if transaction_id is None:
+                            logger.warning(
+                                f"Transaction not found for native_transaction_id={native_tx_id}. "
+                                "Activity record will be saved without transaction_id."
+                            )
+
+                        # Use SQL insert statement
                         values = {
                             "schema": change["schema"],
                             "table_name": change["table_name"],
@@ -526,6 +545,7 @@ class AuditLogger(object):
                             "old_data": change["old_data"],
                             "changed_data": change["changed_data"],
                             "transaction_id": transaction_id,
+                            "record_id": record_id,
                         }
 
                         stmt = insert(self.activity_cls).values(**values)
@@ -552,6 +572,7 @@ class AuditLogger(object):
                         .order_by(self.transaction_cls.issued_at.desc())
                         .limit(1)
                         .scalar_subquery(),
+                        "record_id": record_id,
                     }
 
                     stmt = insert(self.activity_cls).values(**values)
@@ -670,6 +691,7 @@ def _activity_model_factory(base, schema_name, transaction_cls):
         old_data = Column(JSONB, default={}, server_default="{}")
         changed_data = Column(JSONB, default={}, server_default="{}")
         transaction_id = Column(BigInteger, ForeignKey(transaction_cls.id))
+        record_id = Column(Text, index=True)
 
         transaction = relationship(transaction_cls, backref="activities")
 

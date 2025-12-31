@@ -22,7 +22,7 @@ BEGIN
     IF (TG_OP = 'UPDATE') THEN
         INSERT INTO ${schema_prefix}activity(
             id, schema, table_name, relid, issued_at, native_transaction_id,
-            verb, old_data, changed_data, transaction_id)
+            verb, old_data, changed_data, transaction_id, record_id)
         SELECT
             nextval('${schema_prefix}activity_id_seq') as id,
             TG_TABLE_SCHEMA::text AS schema,
@@ -33,7 +33,8 @@ BEGIN
             LOWER(TG_OP) AS verb,
             old_data - excluded_cols AS old_data,
             ${schema_prefix}jsonb_subtract(new_data, old_data) - excluded_cols AS changed_data,
-            _transaction_id AS transaction_id
+            _transaction_id AS transaction_id,
+            COALESCE((${schema_prefix}jsonb_subtract(new_data, old_data) - excluded_cols)->>'id', old_data->>'id') AS record_id
         FROM (
             SELECT *
             FROM (
@@ -54,7 +55,7 @@ BEGIN
     ELSIF (TG_OP = 'INSERT') THEN
         INSERT INTO ${schema_prefix}activity(
             id, schema, table_name, relid, issued_at, native_transaction_id,
-            verb, old_data, changed_data, transaction_id)
+            verb, old_data, changed_data, transaction_id, record_id)
         SELECT
             nextval('${schema_prefix}activity_id_seq') as id,
             TG_TABLE_SCHEMA::text AS schema,
@@ -65,12 +66,13 @@ BEGIN
             LOWER(TG_OP) AS verb,
             '{}'::jsonb AS old_data,
             row_to_json(new_table.*)::jsonb - excluded_cols AS changed_data,
-            _transaction_id AS transaction_id
+            _transaction_id AS transaction_id,
+            (row_to_json(new_table.*)::jsonb)->>'id' AS record_id
         FROM new_table;
     ELSEIF TG_OP = 'DELETE' THEN
         INSERT INTO ${schema_prefix}activity(
             id, schema, table_name, relid, issued_at, native_transaction_id,
-            verb, old_data, changed_data, transaction_id)
+            verb, old_data, changed_data, transaction_id, record_id)
         SELECT
             nextval('${schema_prefix}activity_id_seq') as id,
             TG_TABLE_SCHEMA::text AS schema,
@@ -81,7 +83,8 @@ BEGIN
             LOWER(TG_OP) AS verb,
             row_to_json(old_table.*)::jsonb - excluded_cols AS old_data,
             '{}'::jsonb AS changed_data,
-            _transaction_id AS transaction_id
+            _transaction_id AS transaction_id,
+            (row_to_json(old_table.*)::jsonb)->>'id' AS record_id
         FROM old_table;
     END IF;
     RETURN NULL;
