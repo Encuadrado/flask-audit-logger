@@ -329,14 +329,16 @@ class AuditLogger(object):
             m.local_table in self.versioned_tables for m in orm_execute_state.all_mappers
         )
         if is_write and affects_versioned_table:
-            self.save_transaction(orm_execute_state.session)
+            native_tx_id = orm_execute_state.session.execute(func.txid_current()).scalar()
+            self.save_transaction(orm_execute_state.session, native_tx_id)
 
     def receive_before_flush(self, session, flush_context, instances):
         if _is_session_modified(session, self.versioned_tables):
-            self.save_transaction(session)
+            native_tx_id = session.execute(func.txid_current()).scalar()
+            self.save_transaction(session, native_tx_id)
             # For Python-based activity writer, collect entity changes before flush
             if self.use_python_activity_writer:
-                self._collect_entity_changes(session, flush_context)
+                self._collect_entity_changes(session, flush_context, native_tx_id)
 
     def receive_after_flush(self, session, flush_context):
         """Save activity records after flush when using Python-based activity writer."""
@@ -348,11 +350,8 @@ class AuditLogger(object):
             changes = flush_context._audit_logger_changes
             self.save_activity_records_after_flush(session, changes)
 
-    def _collect_entity_changes(self, session, flush_context):
+    def _collect_entity_changes(self, session, flush_context, native_tx_id):
         """Collect entity changes before they are flushed."""
-        # Get the native transaction ID from the main session
-        native_tx_id = session.execute(func.txid_current()).scalar()
-
         changes = {
             "native_transaction_id": native_tx_id,
             "inserts": [],
@@ -581,12 +580,17 @@ class AuditLogger(object):
         except Exception as e:
             logger.error(f"Failed to save activity records: {e}", exc_info=True)
 
-    def save_transaction(self, session):
+    def save_transaction(self, session, native_tx_id=None):
         if self.audit_logger_disabled:
             return
 
+        # If native_tx_id is not provided, get it from the session
+        # This ensures we use the main database's transaction ID even when writing to a secondary audit DB
+        if native_tx_id is None:
+            native_tx_id = session.execute(func.txid_current()).scalar()
+
         values = {
-            "native_transaction_id": func.txid_current(),
+            "native_transaction_id": native_tx_id,
             "issued_at": text("now() AT TIME ZONE 'UTC'"),
             "client_addr": self.get_client_addr(),
             "actor_id": self.get_actor_id(),
