@@ -419,8 +419,8 @@ class AuditLogger(object):
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
 
-        # For updates, we need to capture the complete old_data (all fields before change)
-        # and only the changed fields in changed_data
+        # For updates, we only need to capture the old values of changed fields in old_data
+        # and the new values of changed fields in changed_data
         old_data = {}
         changed_data = {}
 
@@ -451,11 +451,6 @@ class AuditLogger(object):
                 if history.added:
                     # This is the new value
                     changed_data[column.name] = _make_json_serializable(history.added[0])
-            else:
-                # This column was not modified, use current value for old_data
-                value = getattr(entity, column.name, None)
-                if value is not None:
-                    old_data[column.name] = _make_json_serializable(value)
 
         return {
             "schema": table.schema or "public",
