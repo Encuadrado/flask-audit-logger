@@ -3,7 +3,10 @@ import os
 import string
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from functools import cached_property
+from uuid import UUID
 
 from flask import request
 from flask_sqlalchemy import SQLAlchemy
@@ -34,6 +37,27 @@ from flask_audit_logger import alembic_hooks
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)
+
+
+def _make_json_serializable(data):
+    """Convert data to JSON serializable format.
+
+    Handles datetime, date, Decimal, UUID and other non-serializable types.
+    """
+    if isinstance(data, dict):
+        return {key: _make_json_serializable(value) for key, value in data.items()}
+    elif isinstance(data, (list, tuple)):
+        return [_make_json_serializable(item) for item in data]
+    elif isinstance(data, (datetime, date)):
+        return data.isoformat()
+    elif isinstance(data, Decimal):
+        return float(data)
+    elif isinstance(data, UUID):
+        return str(data)
+    elif isinstance(data, bytes):
+        return data.decode('utf-8', errors='replace')
+    else:
+        return data
 
 
 class ImproperlyConfigured(Exception):
@@ -371,7 +395,7 @@ class AuditLogger(object):
                 continue
             value = getattr(entity, column.name, None)
             if value is not None:
-                changed_data[column.name] = value
+                changed_data[column.name] = _make_json_serializable(value)
 
         return {
             "schema": table.schema or "public",
@@ -409,21 +433,21 @@ class AuditLogger(object):
                 # This column was modified
                 # For the old value, try deleted first, then unchanged
                 if history.deleted:
-                    old_data[column.name] = history.deleted[0]
+                    old_data[column.name] = _make_json_serializable(history.deleted[0])
                 elif history.unchanged:
-                    old_data[column.name] = history.unchanged[0]
+                    old_data[column.name] = _make_json_serializable(history.unchanged[0])
                 else:
                     # This shouldn't happen but handle it - maybe it's NULL -> value
                     old_data[column.name] = None
 
                 if history.added:
                     # This is the new value
-                    changed_data[column.name] = history.added[0]
+                    changed_data[column.name] = _make_json_serializable(history.added[0])
             else:
                 # This column was not modified, use current value for old_data
                 value = getattr(entity, column.name, None)
                 if value is not None:
-                    old_data[column.name] = value
+                    old_data[column.name] = _make_json_serializable(value)
 
         return {
             "schema": table.schema or "public",
@@ -445,7 +469,7 @@ class AuditLogger(object):
                 continue
             value = getattr(entity, column.name, None)
             if value is not None:
-                old_data[column.name] = value
+                old_data[column.name] = _make_json_serializable(value)
 
         return {
             "schema": table.schema or "public",
