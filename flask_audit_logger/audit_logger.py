@@ -369,10 +369,10 @@ class AuditLogger(object):
                         for column_name in update_record["columns_with_expressions"]:
                             actual_value = getattr(entity, column_name, None)
                             update_record["changed_data"][column_name] = actual_value
-                        
-                        # Clean up temporary fields
-                        del update_record["columns_with_expressions"]
-                        del update_record["entity"]
+                
+                # Clean up temporary fields from all update records
+                update_record.pop("columns_with_expressions", None)
+                update_record.pop("entity", None)
             
             # Now serialize everything to make it JSON-safe
             for change_list in [changes["inserts"], changes["updates"], changes["deletes"]]:
@@ -536,9 +536,9 @@ class AuditLogger(object):
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
 
-        # For updates, we only need to capture the old values of changed fields in old_data
-        # and the new values of changed fields in changed_data
-        # However, we always include primary key columns in changed_data for record identification
+        # For updates, we capture old values of changed fields in old_data
+        # and new values of changed fields in changed_data
+        # However, we always include primary key columns in both for record identification
         old_data = {}
         changed_data = {}
         columns_with_expressions = set()  # Track columns that use SQL expressions
@@ -580,9 +580,11 @@ class AuditLogger(object):
                     else:
                         changed_data[column.name] = added_value
             elif column.name in primary_key_columns:
-                # Always include primary key columns even if unchanged (for record identification)
+                # Always include primary key columns in both old_data and changed_data
+                # even if unchanged (for record identification)
                 value = getattr(entity, column.name, None)
                 if value is not None:
+                    old_data[column.name] = value
                     changed_data[column.name] = value
 
         return {

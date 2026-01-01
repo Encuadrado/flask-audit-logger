@@ -38,10 +38,10 @@ class TestPythonActivityWriter:
         # Check the update activity
         update_activity = activities[1]
         assert update_activity.verb == "update"
-        # old_data should contain all fields (including id)
+        # old_data should contain primary key + old values of changed fields
         assert update_activity.old_data == {"id": 1, "name": "Jan", "age": 15}
-        # changed_data should only contain the modified fields
-        assert update_activity.changed_data == {"name": "Luke", "age": 20}
+        # changed_data should contain primary key + new values of changed fields
+        assert update_activity.changed_data == {"id": 1, "name": "Luke", "age": 20}
 
     def test_delete(self, user):
         """Test that DELETE operations create activity records."""
@@ -130,16 +130,16 @@ class TestPythonActivityWriter:
         # Should have 2 activities: one for insert, one for update
         assert len(activities) == 2
 
-        # Check the update activity - should only have name in changed_data
+        # Check the update activity
         update_activity = activities[1]
         assert update_activity.verb == "update"
-        assert "name" in update_activity.changed_data
-        assert update_activity.changed_data["name"] == "Updated Name"
-        # Old data should contain all fields including the unchanged age
-        assert "name" in update_activity.old_data
-        assert update_activity.old_data["name"] == "Jan"
-        assert "age" in update_activity.old_data
-        assert update_activity.old_data["age"] == 15
+        # changed_data should have primary key + changed field's new value
+        assert update_activity.changed_data == {"id": 1, "name": "Updated Name"}
+        # old_data should have primary key + changed field's old value
+        assert update_activity.old_data == {"id": 1, "name": "Jan"}
+        # Should NOT have unchanged field (age) in either
+        assert "age" not in update_activity.changed_data
+        assert "age" not in update_activity.old_data
 
     def test_data_expression(self, user):
         """Test that the data hybrid property works correctly."""
@@ -187,14 +187,24 @@ class TestPythonActivityWriter:
         # from the jsonb_set function, not a placeholder string
         last_activity = activities[2]
         assert last_activity.verb == "update"
-        assert "metadata" in last_activity.changed_data
         
-        # The metadata should be the actual JSONB result with both keys
+        # changed_data should have primary key + the changed field with actual computed value
+        assert "id" in last_activity.changed_data
+        assert last_activity.changed_data["id"] == 1
+        assert "metadata" in last_activity.changed_data
         actual_metadata = last_activity.changed_data["metadata"]
         assert isinstance(actual_metadata, dict), "Should be a dict, not a string placeholder"
         assert actual_metadata["key"] == "value", "Should preserve original key"
         assert actual_metadata["new_key"] == "new_value", "Should have new key from jsonb_set"
         
-        # Old data should have the original metadata
+        # old_data should have primary key + the old value of the changed field
+        assert "id" in last_activity.old_data
+        assert last_activity.old_data["id"] == 1
         assert "metadata" in last_activity.old_data
         assert last_activity.old_data["metadata"] == {"key": "value"}
+        
+        # Should NOT have unchanged fields like name, age
+        assert "name" not in last_activity.old_data
+        assert "age" not in last_activity.old_data
+        assert "name" not in last_activity.changed_data
+        assert "age" not in last_activity.changed_data
