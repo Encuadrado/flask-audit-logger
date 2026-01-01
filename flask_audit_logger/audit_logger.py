@@ -31,7 +31,7 @@ from sqlalchemy.dialects.postgresql import INET, JSONB, ExcludeConstraint, inser
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import ColumnProperty, relationship, sessionmaker
 from sqlalchemy.orm.session import Session
-from sqlalchemy.sql.elements import TextClause
+from sqlalchemy.sql.elements import TextClause, ClauseElement
 
 from flask_audit_logger import alembic_hooks
 
@@ -42,12 +42,16 @@ logger = logging.getLogger(__name__)
 def _make_json_serializable(data):
     """Convert data to JSON serializable format.
 
-    Handles datetime, date, Decimal, UUID and other non-serializable types.
+    Handles datetime, date, Decimal, UUID, SQLAlchemy expressions and other non-serializable types.
     """
     if isinstance(data, dict):
         return {key: _make_json_serializable(value) for key, value in data.items()}
     elif isinstance(data, (list, tuple)):
         return [_make_json_serializable(item) for item in data]
+    elif isinstance(data, ClauseElement):
+        # Handle SQLAlchemy expressions (like func.jsonb_set, etc.)
+        # Return a string representation to indicate it's a SQL expression
+        return f"<SQL Expression: {type(data).__name__}>"
     elif isinstance(data, (datetime, date)):
         return data.isoformat()
     elif isinstance(data, Decimal):
@@ -352,6 +356,30 @@ class AuditLogger(object):
         # Retrieve the changes collected before flush
         if hasattr(flush_context, "_audit_logger_changes"):
             changes = flush_context._audit_logger_changes
+            
+            # Refresh changed_data for columns that used SQL expressions
+            for update_record in changes["updates"]:
+                if update_record.get("columns_with_expressions"):
+                    entity = update_record.get("entity")
+                    if entity:
+                        # Refresh entity from database to get actual values after expressions executed
+                        session.refresh(entity)
+                        
+                        # Now capture the actual computed values
+                        for column_name in update_record["columns_with_expressions"]:
+                            actual_value = getattr(entity, column_name, None)
+                            update_record["changed_data"][column_name] = actual_value
+                        
+                        # Clean up temporary fields
+                        del update_record["columns_with_expressions"]
+                        del update_record["entity"]
+            
+            # Now serialize everything to make it JSON-safe
+            for change_list in [changes["inserts"], changes["updates"], changes["deletes"]]:
+                for change in change_list:
+                    change["old_data"] = _make_json_serializable(change.get("old_data", {}))
+                    change["changed_data"] = _make_json_serializable(change.get("changed_data", {}))
+            
             self.save_activity_records_after_flush(session, changes)
 
     def _collect_entity_changes(self, session, flush_context):
@@ -499,7 +527,7 @@ class AuditLogger(object):
             "table_name": table.name,
             "verb": "insert",
             "old_data": {},
-            "changed_data": _make_json_serializable(changed_data),
+            "changed_data": changed_data,  # Don't serialize yet
         }
 
     def _capture_update_data(self, entity):
@@ -513,6 +541,7 @@ class AuditLogger(object):
         # However, we always include primary key columns in changed_data for record identification
         old_data = {}
         changed_data = {}
+        columns_with_expressions = set()  # Track columns that use SQL expressions
 
         insp = inspect(entity)
         
@@ -542,8 +571,14 @@ class AuditLogger(object):
                     old_data[column.name] = None
 
                 if history.added:
-                    # This is the new value
-                    changed_data[column.name] = history.added[0]
+                    added_value = history.added[0]
+                    # Check if this is a SQL expression
+                    if isinstance(added_value, ClauseElement):
+                        # Mark this column to be captured after flush
+                        columns_with_expressions.add(column.name)
+                        # Don't set changed_data yet - will be populated after flush
+                    else:
+                        changed_data[column.name] = added_value
             elif column.name in primary_key_columns:
                 # Always include primary key columns even if unchanged (for record identification)
                 value = getattr(entity, column.name, None)
@@ -554,8 +589,10 @@ class AuditLogger(object):
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "update",
-            "old_data": _make_json_serializable(old_data),
-            "changed_data": _make_json_serializable(changed_data),
+            "old_data": old_data,  # Don't serialize yet
+            "changed_data": changed_data,  # Don't serialize yet
+            "columns_with_expressions": columns_with_expressions,
+            "entity": entity,  # Keep reference to entity for after-flush refresh
         }
 
     def _capture_delete_data(self, entity):
@@ -576,7 +613,7 @@ class AuditLogger(object):
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "delete",
-            "old_data": _make_json_serializable(old_data),
+            "old_data": old_data,  # Don't serialize yet
             "changed_data": {},
         }
 

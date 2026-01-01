@@ -6,6 +6,7 @@ from flask import Flask
 from flask_login import LoginManager, UserMixin
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
 from flask_audit_logger import AuditLogger
@@ -30,6 +31,7 @@ class User(db.Model, UserMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     age: Mapped[Optional[int]] = mapped_column(default=None)
+    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, default=None)
 
 
 class Article(db.Model):

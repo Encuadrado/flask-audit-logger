@@ -152,3 +152,49 @@ class TestPythonActivityWriter:
             )
         ).all()
         assert len(activities) == 2
+
+    def test_update_with_sqlalchemy_function(self, user):
+        """Test that SQLAlchemy functions in updates are handled properly.
+        
+        This tests the fix for the issue where SQLAlchemy Function objects
+        (like func.jsonb_set) in changed_data cause JSON serialization errors.
+        The actual computed values should be captured, not placeholder strings.
+        """
+        # Set initial metadata
+        user.metadata = {"key": "value"}
+        db.session.commit()
+
+        # Update using a SQLAlchemy function (jsonb_set)
+        # This simulates the user's scenario where func.jsonb_set is used
+        user.metadata = func.jsonb_set(
+            User.metadata,
+            ["new_key"],
+            '"new_value"',
+            True
+        )
+        db.session.commit()
+
+        # Should have 3 activities: initial insert, first update, second update
+        activities = db.session.scalars(
+            select(AuditLogActivity)
+            .where(AuditLogActivity.table_name == "user")
+            .order_by(AuditLogActivity.id)
+        ).all()
+
+        assert len(activities) == 3
+        
+        # The third activity (second update) should contain the ACTUAL computed value
+        # from the jsonb_set function, not a placeholder string
+        last_activity = activities[2]
+        assert last_activity.verb == "update"
+        assert "metadata" in last_activity.changed_data
+        
+        # The metadata should be the actual JSONB result with both keys
+        actual_metadata = last_activity.changed_data["metadata"]
+        assert isinstance(actual_metadata, dict), "Should be a dict, not a string placeholder"
+        assert actual_metadata["key"] == "value", "Should preserve original key"
+        assert actual_metadata["new_key"] == "new_value", "Should have new key from jsonb_set"
+        
+        # Old data should have the original metadata
+        assert "metadata" in last_activity.old_data
+        assert last_activity.old_data["metadata"] == {"key": "value"}

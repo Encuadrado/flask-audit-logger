@@ -9,6 +9,7 @@ Here you can see the full list of changes between each flask-audit-logger releas
 - Transaction records can now be written to a separate database for improved isolation and scalability
 - Audit write operations are now wrapped in error handling to ensure main transactions never fail due to audit issues
 - Add comprehensive tests for secondary database functionality and error resilience
+- Fix Python-based activity writer to properly capture actual values when SQLAlchemy function objects (like `func.jsonb_set`) are used in entity updates. The actual computed values from the database are now captured after flush instead of attempting to serialize the function objects.
 
 # 1.0.0 (2023-12-29)
 
