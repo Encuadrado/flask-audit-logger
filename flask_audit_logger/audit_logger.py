@@ -362,13 +362,28 @@ class AuditLogger(object):
                 if update_record.get("columns_with_expressions"):
                     entity = update_record.get("entity")
                     if entity:
-                        # Refresh entity from database to get actual values after expressions executed
-                        session.refresh(entity)
+                        # Check if entity is still in a valid state before refreshing
+                        entity_state = inspect(entity)
                         
-                        # Now capture the actual computed values
-                        for column_name in update_record["columns_with_expressions"]:
-                            actual_value = getattr(entity, column_name, None)
-                            update_record["changed_data"][column_name] = actual_value
+                        # Only refresh if entity is persistent and not deleted
+                        if entity_state.persistent and not entity_state.deleted:
+                            try:
+                                # Refresh only the specific attributes we need, not the entire entity
+                                for column_name in update_record["columns_with_expressions"]:
+                                    session.refresh(entity, attribute_names=[column_name])
+                                    actual_value = getattr(entity, column_name, None)
+                                    update_record["changed_data"][column_name] = actual_value
+                            except Exception as e:
+                                # If refresh fails, log warning but don't break the transaction
+                                logger.warning(
+                                    f"Failed to refresh entity to capture SQL expression value: {e}. "
+                                    f"Audit log will not contain computed value for columns: {update_record['columns_with_expressions']}"
+                                )
+                        else:
+                            logger.warning(
+                                f"Entity in invalid state for refresh (persistent={entity_state.persistent}, "
+                                f"deleted={entity_state.deleted}). Skipping SQL expression value capture."
+                            )
                 
                 # Clean up temporary fields from all update records
                 update_record.pop("columns_with_expressions", None)
