@@ -360,14 +360,13 @@ class AuditLogger(object):
             # Capture values for columns that used SQL expressions
             for update_record in changes["updates"]:
                 if update_record.get("columns_with_expressions"):
-                    entity = update_record.get("entity")
-                    if entity:
+                    table = update_record.get("table")
+                    if table is not None:
                         # Query database directly to get computed values without modifying entity state.
                         # This adds one extra query per update with SQL expressions, but:
                         # 1. SQL expressions in updates are rare
                         # 2. Avoids ObjectDeletedError and entity state issues
                         # 3. Ensures accurate audit trail with actual computed values
-                        table = entity.__table__
                         primary_key_cols = [col for col in table.primary_key.columns]
                         
                         # Build WHERE clause using primary key values from changed_data
@@ -406,7 +405,7 @@ class AuditLogger(object):
                 
                 # Clean up temporary fields from all update records
                 update_record.pop("columns_with_expressions", None)
-                update_record.pop("entity", None)
+                update_record.pop("table", None)
             
             # Now serialize everything to make it JSON-safe
             for change_list in [changes["inserts"], changes["updates"], changes["deletes"]]:
@@ -628,7 +627,8 @@ class AuditLogger(object):
             "old_data": old_data,  # Don't serialize yet
             "changed_data": changed_data,  # Don't serialize yet
             "columns_with_expressions": columns_with_expressions,
-            "entity": entity,  # Keep reference to entity for after-flush refresh
+            # Don't store entity reference - store table metadata instead
+            "table": table if columns_with_expressions else None,
         }
 
     def _capture_delete_data(self, entity):
