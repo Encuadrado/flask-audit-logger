@@ -357,33 +357,52 @@ class AuditLogger(object):
         if hasattr(flush_context, "_audit_logger_changes"):
             changes = flush_context._audit_logger_changes
             
-            # Refresh changed_data for columns that used SQL expressions
+            # Capture values for columns that used SQL expressions
             for update_record in changes["updates"]:
                 if update_record.get("columns_with_expressions"):
                     entity = update_record.get("entity")
                     if entity:
-                        # Check if entity is still in a valid state before refreshing
-                        entity_state = inspect(entity)
+                        # Query database directly to get computed values without modifying entity state.
+                        # This adds one extra query per update with SQL expressions, but:
+                        # 1. SQL expressions in updates are rare
+                        # 2. Avoids ObjectDeletedError and entity state issues
+                        # 3. Ensures accurate audit trail with actual computed values
+                        table = entity.__table__
+                        primary_key_cols = [col for col in table.primary_key.columns]
                         
-                        # Only refresh if entity is persistent and not deleted
-                        if entity_state.persistent and not entity_state.deleted:
+                        # Build WHERE clause using primary key values from changed_data
+                        where_clauses = []
+                        for pk_col in primary_key_cols:
+                            pk_value = update_record["changed_data"].get(pk_col.name)
+                            if pk_value is not None:
+                                where_clauses.append(pk_col == pk_value)
+                        
+                        if where_clauses:
                             try:
-                                # Refresh only the specific attributes we need, not the entire entity
-                                for column_name in update_record["columns_with_expressions"]:
-                                    session.refresh(entity, attribute_names=[column_name])
-                                    actual_value = getattr(entity, column_name, None)
-                                    update_record["changed_data"][column_name] = actual_value
+                                # Query only the columns with SQL expressions
+                                columns_to_select = [
+                                    table.c[col_name] 
+                                    for col_name in update_record["columns_with_expressions"]
+                                ]
+                                
+                                stmt = select(*columns_to_select).where(*where_clauses)
+                                result = session.execute(stmt).first()
+                                
+                                if result:
+                                    # Capture the actual computed values
+                                    for i, column_name in enumerate(update_record["columns_with_expressions"]):
+                                        update_record["changed_data"][column_name] = result[i]
+                                else:
+                                    logger.warning(
+                                        f"Could not find row to capture SQL expression values. "
+                                        f"Table: {table.name}, Primary key filter: {where_clauses}"
+                                    )
                             except Exception as e:
-                                # If refresh fails, log warning but don't break the transaction
+                                # If query fails, log warning but don't break the transaction
                                 logger.warning(
-                                    f"Failed to refresh entity to capture SQL expression value: {e}. "
+                                    f"Failed to query computed SQL expression values: {e}. "
                                     f"Audit log will not contain computed value for columns: {update_record['columns_with_expressions']}"
                                 )
-                        else:
-                            logger.warning(
-                                f"Entity in invalid state for refresh (persistent={entity_state.persistent}, "
-                                f"deleted={entity_state.deleted}). Skipping SQL expression value capture."
-                            )
                 
                 # Clean up temporary fields from all update records
                 update_record.pop("columns_with_expressions", None)
