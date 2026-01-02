@@ -344,9 +344,13 @@ class AuditLogger(object):
             self.save_transaction(session, native_tx_id)
             # For Python-based activity writer, collect entity changes before flush
             if self.use_python_activity_writer:
-                # Store native_tx_id on flush_context for use in _collect_entity_changes
-                flush_context._audit_logger_native_tx_id = native_tx_id
-                self._collect_entity_changes(session, flush_context)
+                try:
+                    # Store native_tx_id on flush_context for use in _collect_entity_changes
+                    flush_context._audit_logger_native_tx_id = native_tx_id
+                    self._collect_entity_changes(session, flush_context)
+                except Exception as e:
+                    logger.error(f"Error in audit logger before_flush: {e}", exc_info=True)
+                    # Don't re-raise - audit logging failures should not break the application
 
     def receive_after_flush(self, session, flush_context):
         """Save activity records after flush when using Python-based activity writer."""
@@ -356,8 +360,37 @@ class AuditLogger(object):
         # Retrieve the changes collected before flush
         if hasattr(flush_context, "_audit_logger_changes"):
             changes = flush_context._audit_logger_changes
+            entity_map = changes.get("_entity_map", {})
             
-            # Capture values for columns that used SQL expressions
+            # For inserts, capture auto-generated IDs after flush
+            for insert_record in changes["inserts"]:
+                if insert_record.get("_needs_pk_capture"):
+                    entity_id = insert_record.get("_entity_id")
+                    entity = entity_map.get(entity_id)
+                    if entity:
+                        try:
+                            # After flush, use inspect(entity).identity to get PK values safely
+                            # This doesn't trigger attribute access that could cause ObjectDeletedError
+                            entity_state = inspect(entity)
+                            if entity_state.identity:
+                                # identity is a tuple of primary key values
+                                table = entity.__table__
+                                pk_cols = list(table.primary_key.columns)
+                                for i, pk_col in enumerate(pk_cols):
+                                    if i < len(entity_state.identity):
+                                        pk_value = entity_state.identity[i]
+                                        if pk_value is not None:
+                                            insert_record["changed_data"][pk_col.name] = pk_value
+                        except Exception as e:
+                            logger.warning(f"Failed to capture auto-generated primary key: {e}")
+                    # Clean up temporary fields
+                    insert_record.pop("_needs_pk_capture", None)
+                    insert_record.pop("_entity_id", None)
+            
+            # Clean up entity map
+            changes.pop("_entity_map", None)
+            
+            # Capture values for columns that used SQL expressions in updates
             for update_record in changes["updates"]:
                 if update_record.get("columns_with_expressions"):
                     table = update_record.get("table")
@@ -417,42 +450,62 @@ class AuditLogger(object):
 
     def _collect_entity_changes(self, session, flush_context):
         """Collect entity changes before they are flushed."""
-        # Get native_tx_id from flush_context if available, otherwise query the session
-        # This ensures we use the main database's transaction ID consistently
-        if hasattr(flush_context, '_audit_logger_native_tx_id'):
-            native_tx_id = flush_context._audit_logger_native_tx_id
-        else:
-            native_tx_id = session.execute(func.txid_current()).scalar()
+        try:
+            # Get native_tx_id from flush_context if available, otherwise query the session
+            # This ensures we use the main database's transaction ID consistently
+            if hasattr(flush_context, '_audit_logger_native_tx_id'):
+                native_tx_id = flush_context._audit_logger_native_tx_id
+            else:
+                native_tx_id = session.execute(func.txid_current()).scalar()
 
-        changes = {
-            "native_transaction_id": native_tx_id,
-            "inserts": [],
-            "updates": [],
-            "deletes": [],
-        }
+            changes = {
+                "native_transaction_id": native_tx_id,
+                "inserts": [],
+                "updates": [],
+                "deletes": [],
+                "_entity_map": {},  # Map entity memory address to entity for PK capture
+            }
 
-        # Collect new entities (INSERTs)
-        for entity in session.new:
-            if entity.__table__ not in self.versioned_tables:
-                continue
-            changes["inserts"].append(self._capture_insert_data(entity))
+            # Collect new entities (INSERTs)
+            # Note: Iterating directly over session.new without converting to list
+            # to avoid potential identity tracking issues
+            for entity in session.new:
+                try:
+                    if entity.__table__ not in self.versioned_tables:
+                        continue
+                    insert_data = self._capture_insert_data(entity)
+                    changes["inserts"].append(insert_data)
+                    # If this insert needs PK capture, map entity for later lookup
+                    if insert_data.get("_needs_pk_capture"):
+                        changes["_entity_map"][id(entity)] = entity
+                except Exception as e:
+                    logger.error(f"Error capturing insert data for {entity.__class__.__name__}: {e}", exc_info=True)
 
-        # Collect modified entities (UPDATEs)
-        for entity in session.dirty:
-            if entity.__table__ not in self.versioned_tables:
-                continue
-            if not _is_entity_modified(entity):
-                continue
-            changes["updates"].append(self._capture_update_data(entity))
+            # Collect modified entities (UPDATEs)
+            for entity in session.dirty:
+                try:
+                    if entity.__table__ not in self.versioned_tables:
+                        continue
+                    if not _is_entity_modified(entity):
+                        continue
+                    changes["updates"].append(self._capture_update_data(entity))
+                except Exception as e:
+                    logger.error(f"Error capturing update data for {entity.__class__.__name__}: {e}", exc_info=True)
 
-        # Collect deleted entities (DELETEs)
-        for entity in session.deleted:
-            if entity.__table__ not in self.versioned_tables:
-                continue
-            changes["deletes"].append(self._capture_delete_data(entity))
+            # Collect deleted entities (DELETEs)
+            for entity in session.deleted:
+                try:
+                    if entity.__table__ not in self.versioned_tables:
+                        continue
+                    changes["deletes"].append(self._capture_delete_data(entity))
+                except Exception as e:
+                    logger.error(f"Error capturing delete data for {entity.__class__.__name__}: {e}", exc_info=True)
 
-        # Store changes on flush_context for retrieval after flush
-        flush_context._audit_logger_changes = changes
+            # Store changes on flush_context for retrieval after flush
+            flush_context._audit_logger_changes = changes
+        except Exception as e:
+            logger.error(f"Error collecting entity changes: {e}", exc_info=True)
+            # Don't re-raise - audit logging failures should not break the application
 
     def _get_table_relid(self, session, schema, table_name):
         """Get the PostgreSQL OID (relid) for a table with caching."""
@@ -542,26 +595,42 @@ class AuditLogger(object):
             return result
 
     def _capture_insert_data(self, entity):
-        """Capture data for an INSERT operation."""
+        """Capture data for an INSERT operation.
+        
+        Auto-generated primary keys will be captured after flush using inspect(entity).identity.
+        """
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
 
         changed_data = {}
+        has_auto_pk = False
+        
         for column in table.columns:
             if column.name in excluded_columns:
                 continue
             value = getattr(entity, column.name, None)
             if value is not None:
                 changed_data[column.name] = value
+            elif column.primary_key:
+                # Primary key is None - will be auto-generated
+                has_auto_pk = True
 
-        return {
+        result = {
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "insert",
             "old_data": {},
             "changed_data": changed_data,  # Don't serialize yet
         }
+        
+        # Mark that we need to capture PK after flush
+        # Store the entity's memory address (id) for matching later - doesn't keep entity alive
+        if has_auto_pk:
+            result["_needs_pk_capture"] = True
+            result["_entity_id"] = id(entity)  # Memory address for matching
+        
+        return result
 
     def _capture_update_data(self, entity):
         """Capture data for an UPDATE operation."""
