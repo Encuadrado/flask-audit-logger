@@ -463,21 +463,14 @@ class AuditLogger(object):
                 "inserts": [],
                 "updates": [],
                 "deletes": [],
-                "_entity_map": {},  # Map entity memory address to entity for PK capture
             }
 
             # Collect new entities (INSERTs)
-            # Note: Iterating directly over session.new without converting to list
-            # to avoid potential identity tracking issues
             for entity in session.new:
                 try:
                     if entity.__table__ not in self.versioned_tables:
                         continue
-                    insert_data = self._capture_insert_data(entity)
-                    changes["inserts"].append(insert_data)
-                    # If this insert needs PK capture, map entity for later lookup
-                    if insert_data.get("_needs_pk_capture"):
-                        changes["_entity_map"][id(entity)] = entity
+                    changes["inserts"].append(self._capture_insert_data(entity))
                 except Exception as e:
                     logger.error(f"Error capturing insert data for {entity.__class__.__name__}: {e}", exc_info=True)
 
@@ -595,42 +588,26 @@ class AuditLogger(object):
             return result
 
     def _capture_insert_data(self, entity):
-        """Capture data for an INSERT operation.
-        
-        Auto-generated primary keys will be captured after flush using inspect(entity).identity.
-        """
+        """Capture data for an INSERT operation."""
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
 
         changed_data = {}
-        has_auto_pk = False
-        
         for column in table.columns:
             if column.name in excluded_columns:
                 continue
             value = getattr(entity, column.name, None)
             if value is not None:
                 changed_data[column.name] = value
-            elif column.primary_key:
-                # Primary key is None - will be auto-generated
-                has_auto_pk = True
 
-        result = {
+        return {
             "schema": table.schema or "public",
             "table_name": table.name,
             "verb": "insert",
             "old_data": {},
             "changed_data": changed_data,  # Don't serialize yet
         }
-        
-        # Mark that we need to capture PK after flush
-        # Store the entity's memory address (id) for matching later - doesn't keep entity alive
-        if has_auto_pk:
-            result["_needs_pk_capture"] = True
-            result["_entity_id"] = id(entity)  # Memory address for matching
-        
-        return result
 
     def _capture_update_data(self, entity):
         """Capture data for an UPDATE operation."""
@@ -749,18 +726,18 @@ class AuditLogger(object):
                 if not change["changed_data"] and not change["old_data"]:
                     continue
 
-                # Extract record_id from the data
+                # Extract record_uuid from the data
                 # For inserts/updates: prefer changed_data, fallback to old_data
                 # For deletes: use old_data
-                record_id = None
+                record_uuid = None
                 if change["verb"] == "delete":
-                    record_id = change["old_data"].get("id")
+                    record_uuid = change["old_data"].get("uuid")
                 else:
-                    record_id = change["changed_data"].get("id") or change["old_data"].get("id")
+                    record_uuid = change["changed_data"].get("uuid") or change["old_data"].get("uuid")
                 
-                # Convert record_id to string if it exists
-                if record_id is not None:
-                    record_id = str(record_id)
+                # Convert record_uuid to string if it exists
+                if record_uuid is not None:
+                    record_uuid = str(record_uuid)
 
                 # Get the table relid (OID) from the batch result
                 relid = relid_map.get((change["schema"], change["table_name"]))
@@ -795,7 +772,7 @@ class AuditLogger(object):
                             "old_data": change["old_data"],
                             "changed_data": change["changed_data"],
                             "transaction_id": transaction_id,
-                            "record_id": record_id,
+                            "record_uuid": record_uuid,
                         }
 
                         stmt = insert(self.activity_cls).values(**values)
@@ -822,7 +799,7 @@ class AuditLogger(object):
                         .order_by(self.transaction_cls.issued_at.desc())
                         .limit(1)
                         .scalar_subquery(),
-                        "record_id": record_id,
+                        "record_uuid": record_uuid,
                     }
 
                     stmt = insert(self.activity_cls).values(**values)
@@ -946,7 +923,7 @@ def _activity_model_factory(base, schema_name, transaction_cls):
         old_data = Column(JSONB, default={}, server_default="{}")
         changed_data = Column(JSONB, default={}, server_default="{}")
         transaction_id = Column(BigInteger, ForeignKey(transaction_cls.id))
-        record_id = Column(Text, index=True)
+        record_uuid = Column(Text, index=True)
 
         transaction = relationship(transaction_cls, backref="activities")
 
