@@ -609,19 +609,17 @@ class AuditLogger(object):
                 continue
             
             # Get the value to be inserted
+            # For inserts, use history which doesn't trigger loads
             history = attr.history
             if history.added:
                 # New value being added
                 value = history.added[0]
             elif history.unchanged:
-                # Value exists but unchanged (rare for inserts)
+                # Value exists but unchanged (rare for inserts but can happen)
                 value = history.unchanged[0]
             else:
-                # Try to get loaded value as fallback
-                try:
-                    value = attr.loaded_value
-                except:
-                    value = None
+                # No value in history - skip this column
+                continue
             
             if value is not None:
                 changed_data[column.name] = value
@@ -686,16 +684,13 @@ class AuditLogger(object):
             elif column.name in primary_key_columns:
                 # Always include primary key columns in both old_data and changed_data
                 # even if unchanged (for record identification)
-                # Use inspector to safely get the value
+                # Use history to safely get the value without triggering loads
+                value = None
                 if history.unchanged:
                     value = history.unchanged[0]
                 elif history.added:
                     value = history.added[0]
-                else:
-                    try:
-                        value = attr.loaded_value
-                    except:
-                        value = None
+                # If no history, we skip this column rather than risk triggering a load
                 
                 if value is not None:
                     old_data[column.name] = value
@@ -736,9 +731,11 @@ class AuditLogger(object):
             
             # Get the current/loaded value from the attribute
             # For deleted entities, we want the value before deletion
+            # Use history which doesn't trigger database loads
             history = attr.history
+            value = None
             if history.deleted:
-                # If there's a deleted value, use it (shouldn't happen for DELETE)
+                # If there's a deleted value, use it (rare for DELETE)
                 value = history.deleted[0]
             elif history.unchanged:
                 # Most common case - the value hasn't changed, just entity is being deleted
@@ -746,13 +743,7 @@ class AuditLogger(object):
             elif history.added:
                 # Edge case - value was just set before deletion
                 value = history.added[0]
-            else:
-                # No history - try to get current value
-                # This might be None or raise an error, so we handle it safely
-                try:
-                    value = attr.loaded_value
-                except:
-                    value = None
+            # If no history, skip this column rather than risk triggering a load
             
             if value is not None:
                 old_data[column.name] = value
