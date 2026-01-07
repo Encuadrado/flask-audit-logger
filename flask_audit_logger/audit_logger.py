@@ -588,16 +588,41 @@ class AuditLogger(object):
             return result
 
     def _capture_insert_data(self, entity):
-        """Capture data for an INSERT operation."""
+        """Capture data for an INSERT operation.
+        
+        Uses SQLAlchemy's inspector to safely access entity state.
+        """
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
 
         changed_data = {}
+        insp = inspect(entity)
+        
         for column in table.columns:
             if column.name in excluded_columns:
                 continue
-            value = getattr(entity, column.name, None)
+            
+            # Use inspector to safely get attribute value
+            attr = insp.attrs.get(column.name)
+            if not attr:
+                continue
+            
+            # Get the value to be inserted
+            history = attr.history
+            if history.added:
+                # New value being added
+                value = history.added[0]
+            elif history.unchanged:
+                # Value exists but unchanged (rare for inserts)
+                value = history.unchanged[0]
+            else:
+                # Try to get loaded value as fallback
+                try:
+                    value = attr.loaded_value
+                except:
+                    value = None
+            
             if value is not None:
                 changed_data[column.name] = value
 
@@ -661,7 +686,17 @@ class AuditLogger(object):
             elif column.name in primary_key_columns:
                 # Always include primary key columns in both old_data and changed_data
                 # even if unchanged (for record identification)
-                value = getattr(entity, column.name, None)
+                # Use inspector to safely get the value
+                if history.unchanged:
+                    value = history.unchanged[0]
+                elif history.added:
+                    value = history.added[0]
+                else:
+                    try:
+                        value = attr.loaded_value
+                    except:
+                        value = None
+                
                 if value is not None:
                     old_data[column.name] = value
                     changed_data[column.name] = value
@@ -678,16 +713,47 @@ class AuditLogger(object):
         }
 
     def _capture_delete_data(self, entity):
-        """Capture data for a DELETE operation."""
+        """Capture data for a DELETE operation.
+        
+        Uses SQLAlchemy's inspector to safely access entity state without
+        triggering ObjectDeletedError.
+        """
         table = entity.__table__
         versioned_info = table.info.get("versioned", {})
         excluded_columns = set(versioned_info.get("exclude", []))
 
         old_data = {}
+        insp = inspect(entity)
+        
         for column in table.columns:
             if column.name in excluded_columns:
                 continue
-            value = getattr(entity, column.name, None)
+            
+            # Use inspector to safely get attribute value
+            attr = insp.attrs.get(column.name)
+            if not attr:
+                continue
+            
+            # Get the current/loaded value from the attribute
+            # For deleted entities, we want the value before deletion
+            history = attr.history
+            if history.deleted:
+                # If there's a deleted value, use it (shouldn't happen for DELETE)
+                value = history.deleted[0]
+            elif history.unchanged:
+                # Most common case - the value hasn't changed, just entity is being deleted
+                value = history.unchanged[0]
+            elif history.added:
+                # Edge case - value was just set before deletion
+                value = history.added[0]
+            else:
+                # No history - try to get current value
+                # This might be None or raise an error, so we handle it safely
+                try:
+                    value = attr.loaded_value
+                except:
+                    value = None
+            
             if value is not None:
                 old_data[column.name] = value
 
